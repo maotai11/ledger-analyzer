@@ -1,0 +1,495 @@
+﻿<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>離線分類帳分析工具</title>
+  <style>
+    html * { box-sizing: border-box; }
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #12212f;
+      --line: #d6dee8;
+      --brand: #165dff;
+      --warn: #d46b08;
+      --danger: #cf1322;
+      --ok: #237804;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(140deg, #edf2ff, var(--bg) 38%, #e9f8ef 100%);
+      color: var(--ink);
+      font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+    }
+    .app {
+      min-height: 100vh;
+      padding: 0 16px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(245, 247, 251, 0.96);
+      backdrop-filter: blur(4px);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .header h1 { margin: 0; font-size: 20px; }
+    .header .meta { font-size: 13px; color: #4f6785; }
+    .layout {
+      min-width: 0;
+      flex: 1 1 0%;
+      display: flex;
+      gap: 16px;
+    }
+    .nav {
+      width: 220px;
+      flex: 0 0 220px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px;
+      height: fit-content;
+      position: sticky;
+      top: 82px;
+    }
+    .nav button {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fbfcff;
+      color: #28405c;
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .nav button.active {
+      background: #e8f0ff;
+      border-color: #9cb5ff;
+      color: #0f3da9;
+      font-weight: 600;
+    }
+    .content {
+      min-width: 0;
+      flex: 1 1 0%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+      color: #35506f;
+    }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 7px 8px;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+      padding: 8px 10px;
+    }
+    button.primary {
+      background: var(--brand);
+      color: #fff;
+      border-color: var(--brand);
+    }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin-top: 8px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 960px;
+    }
+    th, td {
+      border-bottom: 1px solid #edf1f6;
+      padding: 6px 10px;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    th {
+      background: #f7fafe;
+      font-weight: 600;
+      color: #1f3a57;
+      white-space: nowrap;
+    }
+    .col-date { min-width: 90px; }
+    .col-voucher { min-width: 80px; }
+    .col-summary { min-width: 120px; }
+    .col-amount {
+      min-width: 100px;
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid #d6e4ff;
+      background: #f0f5ff;
+      color: #2f54eb;
+      margin-right: 6px;
+    }
+    .module { display: none; }
+    .module.active { display: block; }
+    .muted { color: #5f7692; font-size: 13px; }
+    .danger { color: var(--danger); }
+    .warn { color: var(--warn); }
+    .ok { color: var(--ok); }
+    .list-title { margin-top: 10px; font-weight: 600; color: #2a4668; }
+    .toast-host {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 1000;
+      width: 320px;
+      max-width: calc(100vw - 32px);
+    }
+    .toast {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--brand);
+      background: #fff;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      border-radius: 8px;
+      box-shadow: 0 4px 18px rgba(16, 36, 94, 0.08);
+      font-size: 13px;
+    }
+    .todo {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      width: min(360px, calc(100vw - 32px));
+      max-height: calc(100vh - 80px);
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 6px 28px rgba(17, 42, 90, 0.2);
+      padding: 10px;
+      z-index: 60;
+    }
+    .todo ul {
+      list-style: none;
+      padding: 0;
+      margin: 8px 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .todo li {
+      border: 1px solid #edf1f6;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 13px;
+    }
+    .todo.collapsed {
+      width: auto;
+      max-height: none;
+      padding: 8px 10px;
+      overflow: hidden;
+    }
+    .todo.collapsed .todo-body {
+      display: none;
+    }
+    .todo-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    @media (max-width: 960px) {
+      .layout { flex-direction: column; }
+      .nav {
+        width: 100%;
+        flex: 0 0 auto;
+        position: static;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div>
+        <h1>離線分類帳分析工具</h1>
+        <div class="meta" id="metaText">尚未上傳檔案</div>
+      </div>
+      <div class="toolbar">
+        <label class="primary" style="cursor:pointer;padding:8px 10px;border-radius:8px;background:#165dff;color:#fff;">
+          上傳 Excel
+          <input id="fileInput" type="file" accept=".xlsx,.xls" style="display:none;" />
+        </label>
+        <button id="resetBtn">重新上傳</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="nav">
+        <button class="active" data-module="overview">總覽</button>
+        <button data-module="f1">F1 摘要分組</button>
+        <button data-module="f2">F2 沖帳</button>
+        <button data-module="f3">F3 數字池</button>
+        <button data-module="f4">F4 異常偵測</button>
+        <button data-module="f5">F5 跨科目連結</button>
+        <button data-module="f6">F6 時間斷層</button>
+        <button data-module="f14">F14 重複傳票</button>
+        <button data-module="f18">F18 金額變動</button>
+      </aside>
+
+      <main class="content">
+        <section class="card">
+          <div class="grid">
+            <label>科目
+              <select id="accountSelect"></select>
+            </label>
+            <label>關鍵字搜尋
+              <input id="keywordInput" type="text" placeholder="摘要或傳票號碼" />
+            </label>
+          </div>
+          <div id="stats" class="muted" style="margin-top:8px;"></div>
+        </section>
+
+        <section class="card module active" id="module-overview">
+          <h3>解析後明細</h3>
+          <div id="overviewList"></div>
+        </section>
+
+        <section class="card module" id="module-f1">
+          <h3>F1 摘要分組（Rule Engine v2）</h3>
+          <div class="toolbar">
+            <button id="runF1Btn" class="primary">預覽分組名稱</button>
+            <button id="applyF1Btn">套用分組</button>
+            <input id="f1NewGroupName" type="text" placeholder="新增分組名稱" style="min-width:180px;" />
+            <button id="f1AddGroupBtn">新增分組</button>
+            <button id="exportF1Btn">匯出 CSV</button>
+            <button id="copyF1TextBtn">複製分組摘要</button>
+          </div>
+          <div id="f1CopyOutput" class="muted" style="margin-top:8px;"></div>
+          <div id="f1Result" style="margin-top:10px;"></div>
+          <div class="list-title">目前篩選清單</div>
+          <div id="f1List"></div>
+        </section>
+
+        <section class="card module" id="module-f2">
+          <h3>F2 沖帳</h3>
+          <div class="grid">
+            <label>容差（預設 0.01）
+              <input id="f2Tolerance" type="number" step="0.01" min="0" value="0.01" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF2Btn" class="primary">掃描沖帳</button>
+            <button id="exportF2Btn">匯出 CSV</button>
+            <button id="f2ManualMatchBtn">勾選加入沖帳</button>
+            <button id="f2ResetManualBtn">重設人工調整</button>
+            <button id="copyF2TextBtn">複製未沖帳整理</button>
+          </div>
+          <div id="f2Result" style="margin-top:10px;"></div>
+          <div id="f2UnmatchedSummary" class="muted" style="margin-top:10px;"></div>
+          <div class="list-title">剩餘未配對清單</div>
+          <div id="f2List"></div>
+        </section>
+
+        <section class="card module" id="module-f3">
+          <h3>F3 數字池</h3>
+          <div class="grid">
+            <label>方向
+              <select id="f3Direction">
+                <option value="debit">借方</option>
+                <option value="credit">貸方</option>
+              </select>
+            </label>
+            <label>目標金額
+              <input id="f3Target" type="number" step="0.01" />
+            </label>
+            <label>容差
+              <input id="f3Tolerance" type="number" step="0.01" value="0.01" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF3Btn" class="primary">計算</button>
+          </div>
+          <div id="f3Result" style="margin-top:10px;"></div>
+          <div class="list-title">目前候選清單</div>
+          <div id="f3List"></div>
+        </section>
+
+        <section class="card module" id="module-f4">
+          <h3>F4 異常偵測</h3>
+          <div class="toolbar">
+            <button id="runF4Btn" class="primary">掃描異常</button>
+            <button id="exportF4Btn">匯出 CSV</button>
+          </div>
+          <div id="f4Result" style="margin-top:10px;"></div>
+          <div class="list-title">未命中異常清單</div>
+          <div id="f4List"></div>
+        </section>
+
+        <section class="card module" id="module-f5">
+          <h3>F5 跨科目連結</h3>
+          <div class="grid">
+            <label>模式
+              <select id="f5Mode">
+                <option value="keyword">關鍵字</option>
+                <option value="voucher">傳票號碼</option>
+                <option value="amount">金額追蹤</option>
+                <option value="combo">複合條件</option>
+              </select>
+            </label>
+            <label>查詢文字
+              <input id="f5Query" type="text" />
+            </label>
+            <label>金額
+              <input id="f5Amount" type="number" step="0.01" />
+            </label>
+            <label>誤差
+              <input id="f5Tolerance" type="number" step="0.01" value="0.01" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF5Btn" class="primary">執行搜尋</button>
+          </div>
+          <div id="f5Result" style="margin-top:10px;"></div>
+          <div class="list-title">剩餘清單</div>
+          <div id="f5List"></div>
+        </section>
+
+        <section class="card module" id="module-f6">
+          <h3>F6 時間斷層</h3>
+          <div class="grid">
+            <label>摘要關鍵字（可空白）
+              <input id="f6Keyword" type="text" />
+            </label>
+            <label>頻率
+              <select id="f6Frequency">
+                <option value="yearly">每年</option>
+                <option value="monthly">每月</option>
+                <option value="weekly">每週</option>
+                <option value="daily">每日</option>
+                <option value="custom">其他（自訂）</option>
+              </select>
+            </label>
+            <label>自訂 N（other）
+              <input id="f6CustomCount" type="number" min="1" value="1" />
+            </label>
+            <label>起始（ROC，例如 114-01）
+              <input id="f6From" type="text" placeholder="114-01" />
+            </label>
+            <label>結束（ROC，例如 114-12）
+              <input id="f6To" type="text" placeholder="114-12" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF6Btn" class="primary">檢查</button>
+          </div>
+          <div id="f6Result" style="margin-top:10px;"></div>
+          <div class="list-title">符合頻率清單</div>
+          <div id="f6List"></div>
+        </section>
+
+        <section class="card module" id="module-f14">
+          <h3>F14 重複傳票號碼偵測</h3>
+          <div class="toolbar">
+            <button id="runF14Btn" class="primary">掃描重複傳票</button>
+            <button id="exportF14Btn">匯出 CSV</button>
+          </div>
+          <div id="f14Result" style="margin-top:10px;"></div>
+          <div class="list-title">未命中 F14 清單</div>
+          <div id="f14List"></div>
+        </section>
+
+        <section class="card module" id="module-f18">
+          <h3>F18 同摘要金額變動追蹤</h3>
+          <div class="grid">
+            <label>摘要關鍵字（可批量）
+              <input id="f18Keyword" type="text" placeholder="例如：租金、勞保費（可用逗號/頓號/換行）" />
+            </label>
+            <label>門檻（%）
+              <input id="f18Threshold" type="number" min="1" max="100" value="20" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF18Btn" class="primary">偵測</button>
+            <button id="copyF18TextBtn">複製分組摘要</button>
+            <button id="exportF18Btn">匯出 CSV</button>
+          </div>
+          <div id="f18Result" style="margin-top:10px;"></div>
+          <div class="list-title">涉及分錄清單</div>
+          <div id="f18List"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <section class="todo" id="todoPanel">
+    <div class="todo-head">
+      <strong>F8 待辦 <span id="todoBadge">0</span></strong>
+      <button id="todoToggleBtn" type="button">隱藏</button>
+    </div>
+    <div class="todo-body">
+      <div class="grid" style="margin-top:8px;">
+        <label>傳票號碼
+          <input id="todoVoucher" type="text" />
+        </label>
+        <label>內容
+          <input id="todoContent" type="text" />
+        </label>
+      </div>
+      <div class="toolbar">
+        <button id="addTodoBtn" class="primary">新增</button>
+        <button id="copyTodoAllBtn">複製全部</button>
+      </div>
+      <ul id="todoList"></ul>
+    </div>
+  </section>
+
+  <div class="toast-host" id="toastHost"></div>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/decimal.js"></script>
+  <script src="vendor/fuse.min.js"></script>
+  <script src="ledger.js"></script>
+</body>
+</html>

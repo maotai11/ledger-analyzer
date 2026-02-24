@@ -5,7 +5,7 @@ const AppState = {
   accounts: {}, transactions: [],
   grouping: { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '' },
   groupingStore: {}, activeGroupingKey: 'all',
-  offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '' },
+  offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], manualMatches: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '', suggestThreshold: 80, timeWindowDays: 14, subsetMaxK: 4, subsetTimeLimitMs: 1200, unmatchedView: 'review' },
   pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [] }, crossLink: { mode: 'keyword', query: '', results: [] },
   gap: { results: [], periodicSuggestions: [] }, dupVoucher: { results: [] }, trendAlert: { results: [], groups: [], ungrouped: [], copyText: '' }, todos: [],
 };
@@ -126,7 +126,12 @@ function emptyGroupingState() {
 }
 function cloneGroupingState(s) {
   return {
-    groups: (s?.groups || []).map((g) => ({ id: g.id, name: g.name, transactionIds: [...(g.transactionIds || [])] })),
+    groups: (s?.groups || []).map((g) => ({
+      id: g.id,
+      name: g.name,
+      transactionIds: [...(g.transactionIds || [])],
+      rule: g.rule ? { mode: g.rule.mode || 'A', keyword: g.rule.keyword || '', threshold: Number(g.rule.threshold ?? 70) } : { mode: 'A', keyword: '', threshold: 70 },
+    })),
     ungrouped: [...(s?.ungrouped || [])],
     draftItems: (s?.draftItems || []).map((d) => ({ txnId: d.txnId, proposed: d.proposed, source: d.source || d.proposed })),
     mode: s?.mode || 'applied',
@@ -415,11 +420,215 @@ function renderF2UnmatchedOrganizer(rows) {
   dom.f2UnmatchedSummary.innerHTML = `${copyItems.length ? `<div class="muted">點選分組可跳到明細：</div><div style="margin-top:6px;">${copyItems.map((x) => `<button data-f2-jump="${x.anchorId}" style="margin:0 6px 6px 0;">${escapeHtml(x.text)}</button>`).join('')}</div>` : '<p class="muted">(目前無未沖帳)</p>'}${groupsHtml}`;
 }
 
+function daysBetween(a, b) {
+  if (!(a instanceof Date) || !(b instanceof Date)) return null;
+  const ms = Math.abs(a.getTime() - b.getTime());
+  return Math.round(ms / 86400000);
+}
+
+function withinDays(a, b, winDays) {
+  if (winDays == null) return true;
+  const d = daysBetween(a, b);
+  if (d == null) return true;
+  return d <= winDays;
+}
+
+function sumByIds(txMap, ids, side) {
+  return (ids || []).map((id) => txMap.get(id)).filter(Boolean).reduce((acc, t) => acc + Number(side === 'debit' ? t.debit : t.credit), 0);
+}
+
+function bestSummarySimilarityPct(txMap, leftIds, rightIds) {
+  let best = 0;
+  const left = (leftIds || []).map((id) => txMap.get(id)).filter(Boolean);
+  const right = (rightIds || []).map((id) => txMap.get(id)).filter(Boolean);
+  left.forEach((a) => {
+    right.forEach((b) => {
+      const s = jaccard(a.summary, b.summary) * 100;
+      if (s > best) best = s;
+    });
+  });
+  return best;
+}
+
+function subsetSumK(cands, target, tol, kMax, timeLimitMs) {
+  // cands: [{id, amount}]
+  const start = Date.now();
+  const out = [];
+  const list = cands.slice().sort((a, b) => b.amount - a.amount);
+
+  function dfs(idx, picks, sum) {
+    if (Date.now() - start > timeLimitMs) return;
+    const delta = sum - target;
+    if (Math.abs(delta) <= tol) {
+      out.push({ ids: [...picks], total: sum, delta });
+      // 不要爆量
+      if (out.length >= 30) return;
+      // 仍可繼續找更小 delta（但限制時間）
+    }
+    if (picks.length >= kMax) return;
+    for (let i = idx; i < list.length; i += 1) {
+      if (Date.now() - start > timeLimitMs) return;
+      const next = list[i];
+      const nextSum = sum + next.amount;
+      // pruning: 若已經超過 target+tol 且接下來都是正數，仍可以繼續(因為可能找到別的組合)，但簡單剪枝
+      if (nextSum > target + tol && picks.length + 1 >= kMax) continue;
+      picks.push(next.id);
+      dfs(i + 1, picks, nextSum);
+      picks.pop();
+      if (out.length >= 30) return;
+    }
+  }
+
+  dfs(0, [], 0);
+  // 依 abs(delta) 排序
+  return out.sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta));
+}
+
+function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, timeLimitMs = 1200) {
+  const th = Math.max(0, Math.min(100, Number(thresholdPct) || 80));
+  const txMap = new Map(rows.map((r) => [r.id, r]));
+  const debits = rows.filter((x) => x.debit > 0);
+  const credits = rows.filter((x) => x.credit > 0);
+  const suggestions = [];
+
+  // 借方多筆 ≈ 貸方單筆
+  for (const c of credits) {
+    const pool = debits
+      .filter((d) => withinDays(d.date, c.date, winDays))
+      .map((d) => ({ id: d.id, amount: Number(d.debit || 0) }))
+      .filter((x) => x.amount > 0 && x.amount <= Number(c.credit || 0) + tol);
+
+    if (pool.length < 2) continue;
+    const subsets = subsetSumK(pool, Number(c.credit || 0), tol, kMax, timeLimitMs);
+    const best = subsets.find((s) => s.ids.length >= 2);
+    if (!best) continue;
+
+    const debitIds = best.ids;
+    const creditIds = [c.id];
+    const sim = bestSummarySimilarityPct(txMap, debitIds, creditIds);
+    if (sim < th) continue;
+
+    const total = sumByIds(txMap, debitIds, 'debit');
+    const delta = total - Number(c.credit || 0);
+    const voucherMatch = debitIds.some((id) => cleanText(txMap.get(id)?.voucherNo) === cleanText(c.voucherNo));
+    const dayDiff = Math.min(...debitIds.map((id) => daysBetween(txMap.get(id)?.date, c.date)).filter((x) => x != null), null);
+    suggestions.push({
+      id: `s_${c.id}_${Math.random().toString(36).slice(2, 7)}`,
+      debitIds,
+      creditIds,
+      reason: { kind: `${debitIds.length}→1`, delta, simPct: sim, voucherMatch, dayDiff, target: Number(c.credit || 0) },
+    });
+  }
+
+  // 貸方多筆 ≈ 借方單筆
+  for (const d of debits) {
+    const pool = credits
+      .filter((c) => withinDays(d.date, c.date, winDays))
+      .map((c) => ({ id: c.id, amount: Number(c.credit || 0) }))
+      .filter((x) => x.amount > 0 && x.amount <= Number(d.debit || 0) + tol);
+
+    if (pool.length < 2) continue;
+    const subsets = subsetSumK(pool, Number(d.debit || 0), tol, kMax, timeLimitMs);
+    const best = subsets.find((s) => s.ids.length >= 2);
+    if (!best) continue;
+
+    const debitIds = [d.id];
+    const creditIds = best.ids;
+    const sim = bestSummarySimilarityPct(txMap, debitIds, creditIds);
+    if (sim < th) continue;
+
+    const total = sumByIds(txMap, creditIds, 'credit');
+    const delta = Number(d.debit || 0) - total;
+    const voucherMatch = creditIds.some((id) => cleanText(txMap.get(id)?.voucherNo) === cleanText(d.voucherNo));
+    const dayDiff = Math.min(...creditIds.map((id) => daysBetween(txMap.get(id)?.date, d.date)).filter((x) => x != null), null);
+    suggestions.push({
+      id: `s_${d.id}_${Math.random().toString(36).slice(2, 7)}`,
+      debitIds,
+      creditIds,
+      reason: { kind: `1→${creditIds.length}`, delta, simPct: sim, voucherMatch, dayDiff, target: Number(d.debit || 0) },
+    });
+  }
+
+  // 排序：先看 abs(delta) 再看相似度
+  return suggestions
+    .sort((a, b) => (Math.abs(a.reason.delta) - Math.abs(b.reason.delta)) || (b.reason.simPct - a.reason.simPct))
+    .slice(0, 20);
+}
+
 function renderF2UnmatchedEditor(rows) {
   AppState.offset.lastUnmatchedIds = rows.map((r) => r.id);
-  buildF2UnmatchedGroups(rows);
-  renderF2UnmatchedOrganizer(rows);
-  dom.f2List.innerHTML = `<p class="muted">未沖帳 ${rows.length} 筆（可勾選兩筆一借一貸進行手動沖帳）</p><div class="table-wrap"><table><thead><tr><th>勾選</th><th>日期</th><th>傳票</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th></tr></thead><tbody>${rows.slice(0, 300).map((t) => `<tr><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`).join('')}</tbody></table></div>`;
+  AppState.offset.copyText = formatSummaryAmountList(rows);
+
+  const view = AppState.offset.unmatchedView || 'review';
+  const tol = Number(dom.f2Tolerance.value || 0.01);
+  const suggestTh = Number(AppState.offset.suggestThreshold ?? 80);
+
+  // View: group（像 F1 一樣分組）
+  if (view === 'group') {
+    buildF2UnmatchedGroups(rows);
+    // 在 organizer 上方加一個返回按鈕
+    const header = `
+      <div class="toolbar">
+        <button data-f2-view="review">回到未沖帳清單</button>
+        <button data-f2-suggest-refresh="1">重新掃描沖帳</button>
+      </div>
+      <div class="muted" style="margin-top:6px;">未沖帳分組模式：操作與 F1 類似（改名、批次移動、刪除群組…）。</div>
+    `;
+    renderF2UnmatchedOrganizer(rows);
+    dom.f2UnmatchedSummary.innerHTML = header + dom.f2UnmatchedSummary.innerHTML;
+    dom.f2List.innerHTML = '';
+    return;
+  }
+
+  // View: review（先確認未沖帳是否有遺漏，再決定是否進入分組）
+  const winDays = Number(AppState.offset.timeWindowDays ?? 14);
+  const kMax = Number(AppState.offset.subsetMaxK ?? 4);
+  const timeLimitMs = Number(AppState.offset.subsetTimeLimitMs ?? 1200);
+
+  const suggestions = f2SuggestMatches(rows, tol, suggestTh, winDays, kMax, timeLimitMs);
+  const txMap = new Map(rows.map((r) => [r.id, r]));
+
+  const suggestHtml = suggestions.length
+    ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">
+        ${suggestions.map((s) => {
+          const d0 = txMap.get(s.debitIds?.[0]);
+          const c0 = txMap.get(s.creditIds?.[0]);
+          const label = `${s.reason.kind}｜Δ${fmtAmount(s.reason.delta)}｜${Math.round(s.reason.simPct)}%｜${s.reason.voucherMatch ? '同傳票' : '不同傳票'}｜±${s.reason.dayDiff ?? '-'}天`;
+          const payload = `${(s.debitIds || []).join(',')}|${(s.creditIds || []).join(',')}`;
+          const title = `${(d0?.summary || '').slice(0, 14)} ↔ ${(c0?.summary || '').slice(0, 14)}`;
+          return `<button data-f2-suggest="${escapeHtml(payload)}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+        }).join('')}
+      </div>`
+    : `<div class="muted" style="margin-top:6px;">（目前無建議沖帳）</div>`;
+
+  dom.f2UnmatchedSummary.innerHTML = `
+    <div class="muted">未沖帳剩餘 ${rows.length} 筆。你可以先檢查是否有遺漏，再按「進入分組」用 F1 同款操作整理。</div>
+    <div class="toolbar">
+      <button data-f2-view="group">進入分組（未沖帳）</button>
+      <button data-f2-suggest-refresh="1">重新掃描沖帳</button>
+    </div>
+    <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
+      <label>建議沖帳相似度門檻(%)
+        <input data-f2-suggest-th type="number" min="0" max="100" step="1" value="${escapeHtml(String(Number.isFinite(suggestTh) ? suggestTh : 80))}" style="width:110px;" />
+      </label>
+      <label>時間窗(天)
+        <input data-f2-win type="number" min="0" max="365" step="1" value="${escapeHtml(String(Number.isFinite(winDays) ? winDays : 14))}" style="width:110px;" />
+      </label>
+      <label>最多筆數(k)
+        <input data-f2-kmax type="number" min="2" max="8" step="1" value="${escapeHtml(String(Number.isFinite(kMax) ? kMax : 4))}" style="width:110px;" />
+      </label>
+      <button data-f2-suggest-refresh="1">更新建議</button>
+    </div>
+    <div class="muted" style="margin-top:6px;">建議沖帳（金額平衡 + 摘要高度雷同 + subset sum；點一下會自動勾選建議組合）：</div>
+    ${suggestHtml}
+  `;
+
+  const maxShow = 800;
+  const shown = rows.slice(0, maxShow);
+  dom.f2List.innerHTML = `<p class="muted">未沖帳清單 ${rows.length} 筆（顯示前 ${shown.length} 筆）｜勾選 2 筆（一借一貸）→「勾選加入沖帳」</p>
+    <div class="table-wrap"><table><thead><tr><th>勾選</th><th>日期</th><th>傳票</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th></tr></thead><tbody>
+    ${shown.map((t) => `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`).join('')}
+    </tbody></table></div>`;
 }
 
 function getF2UnmatchedRowsFromState() {
@@ -429,26 +638,54 @@ function getF2UnmatchedRowsFromState() {
 }
 
 function deriveF1GroupName(summary) {
+  // F1: 預設「保留原始摘要」當作分組名稱（只做最小清理）。
+  // 這樣同傳票號、摘要雷同但只有數字不同時，不會被 regex 吃掉。
   let s = normalizeForToken(summary || '');
   if (!s) return '其他';
-  // Remove year/month and month ranges so names like "114年01~03月勞保費" become "勞保費".
-  s = s.replace(/\d{2,4}\s*年\s*\d{1,2}\s*月?\s*[~\-至到]+\s*\d{1,2}\s*月?/g, ' ');
-  s = s.replace(/\d{2,4}\s*[\/\-.]\s*\d{1,2}\s*[~\-至到]+\s*\d{1,2}/g, ' ');
-  s = s.replace(/\d{2,4}\s*(年|[\/\-.])\s*\d{1,2}\s*月?/g, ' ');
-  s = s.replace(/\d{1,2}\s*月/g, ' ');
+
+  // 去掉 Excel 解析常見雜訊與分隔符，保留主要文字與數字。
   if (s.includes('|')) s = cleanText(s.split('|').slice(-1)[0]);
   s = s.replace(/[()（）【】\[\]{}]/g, ' ').replace(/\s+/g, ' ').trim();
-  const m = s.match(/[\u4e00-\u9fffA-Za-z]{2,}/);
-  return m ? m[0] : (s || '其他');
+
+  // 避免組名太長（仍保留差異用的尾碼/數字）：
+  // - 優先保留前面內容
+  // - 太長就截斷
+  const maxLen = 40;
+  if (s.length > maxLen) s = `${s.slice(0, maxLen).trim()}…`;
+
+  return s || '其他';
 }
 
 function ensureOtherGroup() {
   let g = AppState.grouping.groups.find((x) => x.name === '其他');
   if (!g) {
-    g = { id: `g${Date.now()}`, name: '其他', transactionIds: [] };
+    g = { id: `g${Date.now()}`, name: '其他', transactionIds: [], rule: { mode: 'A', keyword: '', threshold: 70 } };
     AppState.grouping.groups.push(g);
   }
+  if (!g.rule) g.rule = { mode: 'A', keyword: '', threshold: 70 };
   return g;
+}
+
+function f1NormalizeForMatch(s) {
+  // 給「關鍵字選取」用：保留原始摘要但壓縮空白。
+  return cleanText(s || '');
+}
+
+function f1RuleMatch(txn, rule) {
+  const keyword = cleanText(rule?.keyword || '');
+  if (!keyword) return false;
+  const text = f1NormalizeForMatch(txn?.summary || '');
+  if (!text) return false;
+
+  const mode = rule?.mode || 'A';
+  if (mode === 'B') {
+    const th = Number(rule?.threshold ?? 70);
+    const pct = Number.isFinite(th) ? th : 70;
+    const score = jaccard(text, keyword) * 100;
+    return score >= pct;
+  }
+  // A: 直接包含
+  return text.includes(keyword);
 }
 
 function syncF1DraftEditsFromUI() {
@@ -521,7 +758,7 @@ function applyF1GroupingFromDraft() {
     if (!groups.has(target)) groups.set(target, []);
   });
 
-  AppState.grouping.groups = Array.from(groups.entries()).map(([name, ids], idx) => ({ id: `g${idx + 1}`, name, transactionIds: ids }));
+  AppState.grouping.groups = Array.from(groups.entries()).map(([name, ids], idx) => ({ id: `g${idx + 1}`, name, transactionIds: ids, rule: { mode: 'A', keyword: '', threshold: 70 } }));
   AppState.grouping.ungrouped = [];
   AppState.grouping.mode = 'applied';
   ensureOtherGroup();
@@ -548,7 +785,10 @@ function applyF1GroupingEdits() {
       merged.get(name).push(id);
     });
   });
-  AppState.grouping.groups = order.map((name, idx) => ({ id: `g${idx + 1}`, name, transactionIds: merged.get(name) || [] }));
+  AppState.grouping.groups = order.map((name, idx) => {
+    const prev = (AppState.grouping.groups || []).find((g) => cleanText(g.name) === name);
+    return { id: `g${idx + 1}`, name, transactionIds: merged.get(name) || [], rule: prev?.rule ? { ...prev.rule } : { mode: 'A', keyword: '', threshold: 70 } };
+  });
   AppState.grouping.ungrouped = AppState.grouping.ungrouped.filter((id) => !seenTxn.has(id));
   AppState.grouping.mode = 'applied';
   ensureOtherGroup();
@@ -576,9 +816,31 @@ function renderF1Output() {
       return `<div class="${ok ? 'ok' : 'danger'}">[${escapeHtml(acc)}] 分組合計 ${fmtSigned(total)} / 最後餘額 ${fmtAmount(lastBal)} ${ok ? 'OK' : '不一致'}</div>`;
     }).join('');
     const anchorId = asGroupAnchor(g.id);
+    const rule = g.rule || (g.rule = { mode: 'A', keyword: '', threshold: 70 });
+    const mode = rule.mode || 'A';
+    const th = Number.isFinite(Number(rule.threshold)) ? Number(rule.threshold) : 70;
+
     return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
       <summary style="cursor:pointer;"><strong>群組：</strong><input data-f1-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" />｜筆數 ${txns.length}｜群組簽帳合計 ${fmtSigned(sumSigned)} <button data-f1-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
       <div style="margin-top:8px;"><button data-f1-back="1">回到分組摘要</button></div>
+
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
+        <label style="min-width:220px;">本組關鍵字
+          <input data-f1-rule-keyword="${g.id}" value="${escapeHtml(rule.keyword || '')}" placeholder="例如：勞保費 / 發票AA123" />
+        </label>
+        <label>模式
+          <select data-f1-rule-mode="${g.id}">
+            <option value="A" ${mode === 'A' ? 'selected' : ''}>A：包含</option>
+            <option value="B" ${mode === 'B' ? 'selected' : ''}>B：相似度</option>
+          </select>
+        </label>
+        <label>相似度門檻(%)
+          <input data-f1-rule-threshold="${g.id}" type="number" min="0" max="100" step="1" value="${escapeHtml(String(th))}" style="width:110px;" />
+        </label>
+        <button data-f1-rule-select="${g.id}">只勾選命中</button>
+        <button data-f1-rule-clear="${g.id}">清除勾選</button>
+      </div>
+
       <div style="margin-top:8px;">${checks || '<div class="muted">此群組無資料</div>'}</div>
       <div style="margin-top:8px;">
         <label><input type="checkbox" data-f1-check-all="${g.id}" /> 全選</label>
@@ -626,6 +888,7 @@ function runF2() {
   // Drop stale ids not in current filtered rows
   AppState.offset.forcedUnmatchedIds = AppState.offset.forcedUnmatchedIds.filter((id) => txMap.has(id));
   AppState.offset.manualPairIds = AppState.offset.manualPairIds.filter((p) => txMap.has(p.debitId) && txMap.has(p.creditId));
+  AppState.offset.manualMatches = (AppState.offset.manualMatches || []).filter((m) => (m.debitIds || []).every((id) => txMap.has(id)) && (m.creditIds || []).every((id) => txMap.has(id)));
 
   const forced = new Set(AppState.offset.forcedUnmatchedIds);
   const manualPairs = [];
@@ -635,9 +898,41 @@ function runF2() {
     const d = txMap.get(p.debitId);
     const c = txMap.get(p.creditId);
     if (!d || !c) return;
-    manualPairs.push({ debit: d, credit: c, debitTotal: d.debit, creditTotal: c.credit, confidence: 'manual' });
+    manualPairs.push({
+      id: `p_${d.id}_${c.id}`,
+      kind: '1↔1',
+      debitIds: [d.id],
+      creditIds: [c.id],
+      debitTotal: d.debit,
+      creditTotal: c.credit,
+      confidence: 'manual',
+      reason: { delta: Number(d.debit || 0) - Number(c.credit || 0), simPct: jaccard(d.summary, c.summary) * 100, voucherMatch: cleanText(d.voucherNo) === cleanText(c.voucherNo), dayDiff: daysBetween(d.date, c.date) },
+    });
     used.add(d.id);
     used.add(c.id);
+  });
+
+  // Multi-line manual matches
+  (AppState.offset.manualMatches || []).forEach((m) => {
+    const debitIds = (m.debitIds || []).filter((id) => txMap.has(id));
+    const creditIds = (m.creditIds || []).filter((id) => txMap.has(id));
+    if (!debitIds.length || !creditIds.length) return;
+
+    debitIds.forEach((id) => used.add(id));
+    creditIds.forEach((id) => used.add(id));
+
+    const debitTotal = sumByIds(txMap, debitIds, 'debit');
+    const creditTotal = sumByIds(txMap, creditIds, 'credit');
+    manualPairs.push({
+      id: m.id,
+      kind: `${debitIds.length}↔${creditIds.length}`,
+      debitIds,
+      creditIds,
+      debitTotal,
+      creditTotal,
+      confidence: 'manual',
+      reason: m.reason || { delta: debitTotal - creditTotal, simPct: bestSummarySimilarityPct(txMap, debitIds, creditIds), voucherMatch: false, dayDiff: null },
+    });
   });
 
   const debits = rows.filter((x) => x.debit > 0 && !forced.has(x.id) && !used.has(x.id));
@@ -661,11 +956,34 @@ function runF2() {
 
   const pairs = manualPairs.concat(autoPairs);
   AppState.offset.pairs = pairs;
-  const matched = new Set(pairs.flatMap((p) => [p.debit.id, p.credit.id]));
+
+  const matched = new Set();
+  pairs.forEach((p) => {
+    // autoPairs keep old shape (debit/credit objects)
+    if (p?.debit?.id && p?.credit?.id) {
+      matched.add(p.debit.id);
+      matched.add(p.credit.id);
+      return;
+    }
+    (p.debitIds || []).forEach((id) => matched.add(id));
+    (p.creditIds || []).forEach((id) => matched.add(id));
+  });
   const remain = rows.filter((r) => !matched.has(r.id) || forced.has(r.id));
 
   dom.f2Result.innerHTML = pairs.length
-    ? `<div class="table-wrap"><table><thead><tr><th>借方摘要</th><th class="col-amount">借方金額</th><th>貸方摘要</th><th class="col-amount">貸方金額</th><th>信心度</th><th>操作</th></tr></thead><tbody>${pairs.map((p, idx) => `<tr><td>${escapeHtml(p.debit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.debitTotal)}</td><td>${escapeHtml(p.credit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.creditTotal)}</td><td>${p.confidence}</td><td><button data-f2-unpair="${idx}">移動至未沖帳</button></td></tr>`).join('')}</tbody></table></div>`
+    ? `<div class="table-wrap"><table><thead><tr><th>類型</th><th>借方</th><th class="col-amount">借方合計</th><th>貸方</th><th class="col-amount">貸方合計</th><th>Δ</th><th>相似%</th><th>信心度</th><th>操作</th></tr></thead><tbody>${pairs.map((p, idx) => {
+      // old autoPairs shape
+      if (p?.debit?.id && p?.credit?.id) {
+        const sim = jaccard(p.debit.summary, p.credit.summary) * 100;
+        return `<tr><td>1↔1</td><td>${escapeHtml(p.debit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.debitTotal)}</td><td>${escapeHtml(p.credit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.creditTotal)}</td><td>${fmtAmount(Number(p.debitTotal || 0) - Number(p.creditTotal || 0))}</td><td>${Math.round(sim)}</td><td>${p.confidence}</td><td><button data-f2-unpair="${idx}">移動至未沖帳</button></td></tr>`;
+      }
+      const txMap2 = new Map(rows.map((r) => [r.id, r]));
+      const dText = (p.debitIds || []).map((id) => txMap2.get(id)?.summary).filter(Boolean).slice(0, 2).join(' / ') || '(借方)';
+      const cText = (p.creditIds || []).map((id) => txMap2.get(id)?.summary).filter(Boolean).slice(0, 2).join(' / ') || '(貸方)';
+      const delta = Number(p.debitTotal || 0) - Number(p.creditTotal || 0);
+      const sim = Number(p.reason?.simPct ?? bestSummarySimilarityPct(txMap2, p.debitIds, p.creditIds));
+      return `<tr><td>${escapeHtml(p.kind || '多筆')}</td><td>${escapeHtml(dText)}</td><td class="col-amount">${fmtAmount(p.debitTotal)}</td><td>${escapeHtml(cText)}</td><td class="col-amount">${fmtAmount(p.creditTotal)}</td><td>${fmtAmount(delta)}</td><td>${Math.round(sim)}</td><td>${p.confidence}</td><td><button data-f2-unpair="${idx}">移動至未沖帳</button></td></tr>`;
+    }).join('')}</tbody></table></div>`
     : `<p class="muted">命中 0 筆配對，未沖帳清單如下。</p>`;
 
   renderF2UnmatchedEditor(remain);
@@ -815,8 +1133,50 @@ function runF4() {
   }
 
   const byH = new Map();
-  rows.forEach((t) => { const n = Number(cleanText(t.voucherNo).replace(/\D/g, '')); if (!Number.isFinite(n) || !n) return; const k = `${t.accountCode}||${t.periodROC}`; if (!byH.has(k)) byH.set(k, []); byH.get(k).push({ n, t }); });
-  byH.forEach((items) => { items.sort((a, b) => a.n - b.n); for (let i = 1; i < items.length; i += 1) if (items[i].n - items[i - 1].n > 1) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'H', severity: 'WARN', accountCode: items[i].t.accountCode, transactionIds: [items[i - 1].t.id, items[i].t.id], description: '傳票跳號' }); });
+  rows.forEach((t) => {
+    const n = Number(cleanText(t.voucherNo).replace(/\D/g, ''));
+    if (!Number.isFinite(n) || !n) return;
+    const k = `${t.accountCode}||${t.periodROC}`;
+    if (!byH.has(k)) byH.set(k, []);
+    byH.get(k).push({ n, t });
+  });
+
+  // H: 以「科目 + 月份」分組，顯示缺的區間，並帶前後摘要方便展開查看。
+  byH.forEach((items, key) => {
+    items.sort((a, b) => a.n - b.n);
+    for (let i = 1; i < items.length; i += 1) {
+      const prev = items[i - 1];
+      const curr = items[i];
+      const gap = curr.n - prev.n;
+      if (gap <= 1) continue;
+      const missingFrom = prev.n + 1;
+      const missingTo = curr.n - 1;
+      const missText = missingFrom === missingTo ? `${missingFrom}` : `${missingFrom}~${missingTo}`;
+      const [accountCode, periodROC] = String(key).split('||');
+      const before = prev.t;
+      const after = curr.t;
+      const desc = `傳票缺號 ${prev.n}→${curr.n} 缺 ${missText}｜[${accountCode}] ${periodROC}`;
+
+      results.push({
+        id: Math.random().toString(36).slice(2, 10),
+        rule: 'H',
+        severity: 'WARN',
+        accountCode: before.accountCode,
+        transactionIds: [before.id, after.id],
+        description: desc,
+        meta: {
+          accountCode,
+          periodROC,
+          beforeVoucher: before.voucherNo,
+          afterVoucher: after.voucherNo,
+          beforeSummary: before.summary,
+          afterSummary: after.summary,
+          missingFrom,
+          missingTo,
+        },
+      });
+    }
+  });
 
   AppState.anomaly.results = results;
   const hit = new Set(results.flatMap((r) => r.transactionIds)); const remain = rows.filter((r) => !hit.has(r.id));
@@ -1305,9 +1665,25 @@ function bindEvents() {
     const idx = Number(idxText);
     const pair = AppState.offset.pairs[idx];
     if (!pair) return;
-    if (!AppState.offset.forcedUnmatchedIds.includes(pair.debit.id)) AppState.offset.forcedUnmatchedIds.push(pair.debit.id);
-    if (!AppState.offset.forcedUnmatchedIds.includes(pair.credit.id)) AppState.offset.forcedUnmatchedIds.push(pair.credit.id);
-    AppState.offset.manualPairIds = AppState.offset.manualPairIds.filter((p) => !(p.debitId === pair.debit.id && p.creditId === pair.credit.id));
+
+    // autoPairs (legacy shape)
+    if (pair?.debit?.id && pair?.credit?.id) {
+      if (!AppState.offset.forcedUnmatchedIds.includes(pair.debit.id)) AppState.offset.forcedUnmatchedIds.push(pair.debit.id);
+      if (!AppState.offset.forcedUnmatchedIds.includes(pair.credit.id)) AppState.offset.forcedUnmatchedIds.push(pair.credit.id);
+      AppState.offset.manualPairIds = AppState.offset.manualPairIds.filter((p) => !(p.debitId === pair.debit.id && p.creditId === pair.credit.id));
+      runF2();
+      return;
+    }
+
+    // manualMatches (multi-line)
+    const ids = (pair.debitIds || []).concat(pair.creditIds || []).filter(Boolean);
+    ids.forEach((id2) => {
+      if (!AppState.offset.forcedUnmatchedIds.includes(id2)) AppState.offset.forcedUnmatchedIds.push(id2);
+    });
+
+    // remove from manualMatches by id
+    AppState.offset.manualMatches = (AppState.offset.manualMatches || []).filter((m) => m.id !== pair.id);
+
     runF2();
   });
 
@@ -1320,6 +1696,37 @@ function bindEvents() {
   });
 
   dom.f2UnmatchedSummary.addEventListener('click', (e) => {
+    const view = e.target?.dataset?.f2View;
+    if (view) {
+      AppState.offset.unmatchedView = view === 'group' ? 'group' : 'review';
+      renderF2UnmatchedEditor(getF2UnmatchedRowsFromState());
+      return;
+    }
+
+    const suggest = e.target?.dataset?.f2Suggest;
+    if (suggest) {
+      const [debitCsv, creditCsv] = String(suggest).split('|');
+      const debitIds = (debitCsv || '').split(',').map((x) => cleanText(x)).filter(Boolean);
+      const creditIds = (creditCsv || '').split(',').map((x) => cleanText(x)).filter(Boolean);
+      if (!debitIds.length || !creditIds.length) return;
+      // 先清除現有勾選
+      dom.f2List.querySelectorAll('input[data-f2-pick]').forEach((cb) => { cb.checked = false; });
+      // 自動勾選建議的多筆
+      debitIds.concat(creditIds).forEach((id) => {
+        const cb = dom.f2List.querySelector(`input[data-f2-pick="${id}"]`);
+        if (cb) cb.checked = true;
+      });
+      const row = document.getElementById(`f2-row-${debitIds[0]}`) || document.getElementById(`f2-row-${creditIds[0]}`);
+      if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast(`已自動勾選建議沖帳：借${debitIds.length}／貸${creditIds.length}`);
+      return;
+    }
+    const refresh = e.target?.dataset?.f2SuggestRefresh;
+    if (refresh) {
+      runF2();
+      return;
+    }
+
     const jump = e.target?.dataset?.f2Jump;
     if (jump) {
       const target = document.getElementById(jump);
@@ -1426,6 +1833,24 @@ function bindEvents() {
   });
 
   dom.f2UnmatchedSummary.addEventListener('change', (e) => {
+    const th = e.target?.dataset?.f2SuggestTh;
+    if (th) {
+      const n = Number(e.target.value);
+      AppState.offset.suggestThreshold = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 80;
+      return;
+    }
+    const win = e.target?.dataset?.f2Win;
+    if (win) {
+      const n = Number(e.target.value);
+      AppState.offset.timeWindowDays = Number.isFinite(n) ? Math.max(0, Math.min(365, n)) : 14;
+      return;
+    }
+    const km = e.target?.dataset?.f2Kmax;
+    if (km) {
+      const n = Number(e.target.value);
+      AppState.offset.subsetMaxK = Number.isFinite(n) ? Math.max(2, Math.min(8, n)) : 4;
+    }
+
     const allGroupId = e.target?.dataset?.f2CheckAll;
     if (!allGroupId) return;
     const checked = !!e.target.checked;
@@ -1435,36 +1860,82 @@ function bindEvents() {
   });
 
   dom.f2ManualMatchBtn.addEventListener('click', () => {
-    const picks = Array.from(dom.f2List.querySelectorAll('input[data-f2-pick]:checked')).map((x) => x.getAttribute('data-f2-pick'));
-    if (picks.length !== 2) {
-      toast('請勾選 2 筆（一借一貸）', 'WARN');
+    const picks = Array.from(dom.f2List.querySelectorAll('input[data-f2-pick]:checked'))
+      .map((x) => x.getAttribute('data-f2-pick'))
+      .filter(Boolean);
+
+    if (picks.length < 2) {
+      toast('請至少勾選 2 筆（可多對一/一對多）', 'WARN');
       return;
     }
+
     const all = getFilteredTransactions();
-    const a = all.find((t) => t.id === picks[0]);
-    const b = all.find((t) => t.id === picks[1]);
-    if (!a || !b) return;
-    let debit = null;
-    let credit = null;
-    if (a.debit > 0 && b.credit > 0) { debit = a; credit = b; }
-    if (b.debit > 0 && a.credit > 0) { debit = b; credit = a; }
-    if (!debit || !credit) {
-      toast('需一筆借方與一筆貸方', 'WARN');
+    const rows = picks.map((id) => all.find((t) => t.id === id)).filter(Boolean);
+    if (rows.length !== picks.length) {
+      toast('部分勾選項目已不在清單中', 'WARN');
       return;
     }
-    if (!absDeltaWithin(debit.debit, credit.credit, Number(dom.f2Tolerance.value || 0.01))) {
-      toast('兩筆金額超出容差，無法沖帳', 'WARN');
+
+    const debitIds = rows.filter((t) => t.debit > 0).map((t) => t.id);
+    const creditIds = rows.filter((t) => t.credit > 0).map((t) => t.id);
+    if (!debitIds.length || !creditIds.length) {
+      toast('需同時包含借方與貸方項目', 'WARN');
       return;
     }
-    const exists = AppState.offset.manualPairIds.some((p) => p.debitId === debit.id && p.creditId === credit.id);
-    if (!exists) AppState.offset.manualPairIds.push({ debitId: debit.id, creditId: credit.id });
-    AppState.offset.forcedUnmatchedIds = AppState.offset.forcedUnmatchedIds.filter((id) => id !== debit.id && id !== credit.id);
+
+    const txMap = new Map(all.map((t) => [t.id, t]));
+    const debitTotal = sumByIds(txMap, debitIds, 'debit');
+    const creditTotal = sumByIds(txMap, creditIds, 'credit');
+    const tol = Number(dom.f2Tolerance.value || 0.01);
+    if (!absDeltaWithin(debitTotal, creditTotal, tol)) {
+      toast(`借貸不平（借${fmtAmount(debitTotal)} / 貸${fmtAmount(creditTotal)}，容差${tol}）`, 'WARN');
+      return;
+    }
+
+    const id = `m${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const simPct = bestSummarySimilarityPct(txMap, debitIds, creditIds);
+    const dayDiff = (() => {
+      const d0 = txMap.get(debitIds[0])?.date;
+      const ds = debitIds.concat(creditIds).map((x) => txMap.get(x)?.date).filter((x) => x instanceof Date);
+      if (!d0 || !ds.length) return null;
+      return Math.max(...ds.map((dt) => daysBetween(dt, d0)).filter((x) => x != null));
+    })();
+    const voucherMatch = (() => {
+      const v = cleanText(txMap.get(debitIds[0])?.voucherNo);
+      if (!v) return false;
+      return creditIds.some((cid) => cleanText(txMap.get(cid)?.voucherNo) === v);
+    })();
+
+    const exists = (AppState.offset.manualMatches || []).some((m) => {
+      const a = (m.debitIds || []).slice().sort().join(',');
+      const b = (m.creditIds || []).slice().sort().join(',');
+      return a === debitIds.slice().sort().join(',') && b === creditIds.slice().sort().join(',');
+    });
+    if (exists) {
+      toast('此沖帳組合已存在', 'WARN');
+      return;
+    }
+
+    if (!AppState.offset.manualMatches) AppState.offset.manualMatches = [];
+    AppState.offset.manualMatches.push({
+      id,
+      debitIds,
+      creditIds,
+      createdAt: Date.now(),
+      reason: { kind: `${debitIds.length}↔${creditIds.length}`, delta: debitTotal - creditTotal, simPct, voucherMatch, dayDiff },
+    });
+
+    // 被套用的 items 不應再卡在 forcedUnmatched
+    const usedIds = new Set(debitIds.concat(creditIds));
+    AppState.offset.forcedUnmatchedIds = AppState.offset.forcedUnmatchedIds.filter((x) => !usedIds.has(x));
+
     runF2();
   });
 
   dom.f2ResetManualBtn.addEventListener('click', () => {
     AppState.offset.forcedUnmatchedIds = [];
     AppState.offset.manualPairIds = [];
+    AppState.offset.manualMatches = [];
     AppState.offset.unmatchedGroups = [];
     runF2();
   });
@@ -1534,6 +2005,32 @@ function bindEvents() {
       dom.f1CopyOutput.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
+
+    // F1: 本組關鍵字/相似度 勾選輔助
+    const ruleSelectId = e.target?.dataset?.f1RuleSelect;
+    if (ruleSelectId) {
+      const group = AppState.grouping.groups.find((g) => g.id === ruleSelectId);
+      if (!group) return;
+      if (!group.rule) group.rule = { mode: 'A', keyword: '', threshold: 70 };
+      const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+      const hits = new Set();
+      group.transactionIds.forEach((id) => {
+        const t = txMap.get(id);
+        if (t && f1RuleMatch(t, group.rule)) hits.add(id);
+      });
+      dom.f1Result.querySelectorAll(`input[data-f1-pick][data-f1-from="${ruleSelectId}"]`).forEach((cb) => {
+        cb.checked = hits.has(cb.getAttribute('data-f1-pick'));
+      });
+      toast(`已勾選命中 ${hits.size} 筆`);
+      return;
+    }
+    const ruleClearId = e.target?.dataset?.f1RuleClear;
+    if (ruleClearId) {
+      dom.f1Result.querySelectorAll(`input[data-f1-pick][data-f1-from="${ruleClearId}"]`).forEach((cb) => { cb.checked = false; });
+      toast('已清除勾選');
+      return;
+    }
+
     const delGroupId = e.target?.dataset?.f1DelGroup;
     if (delGroupId) {
       const group = AppState.grouping.groups.find((g) => g.id === delGroupId);
@@ -1610,13 +2107,50 @@ function bindEvents() {
     }
   });
 
+  // Draft rename persistence: 當你在「預覽分組名稱」直接改名字，任何重繪都要保留。
+  dom.f1Result.addEventListener('input', (e) => {
+    const from = e.target?.dataset?.f1DraftName;
+    if (!from) return;
+    const to = cleanText(e.target.value) || from || '其他';
+    AppState.grouping.draftRenameMap[from] = to;
+  });
+
   dom.f1Result.addEventListener('change', (e) => {
     const allGroupId = e.target?.dataset?.f1CheckAll;
-    if (!allGroupId) return;
-    const checked = !!e.target.checked;
-    dom.f1Result.querySelectorAll(`input[data-f1-pick][data-f1-from="${allGroupId}"]`).forEach((cb) => {
-      cb.checked = checked;
-    });
+    if (allGroupId) {
+      const checked = !!e.target.checked;
+      dom.f1Result.querySelectorAll(`input[data-f1-pick][data-f1-from="${allGroupId}"]`).forEach((cb) => {
+        cb.checked = checked;
+      });
+      return;
+    }
+
+    const modeGid = e.target?.dataset?.f1RuleMode;
+    if (modeGid) {
+      const g = AppState.grouping.groups.find((x) => x.id === modeGid);
+      if (!g) return;
+      if (!g.rule) g.rule = { mode: 'A', keyword: '', threshold: 70 };
+      g.rule.mode = e.target.value === 'B' ? 'B' : 'A';
+      return;
+    }
+
+    const thGid = e.target?.dataset?.f1RuleThreshold;
+    if (thGid) {
+      const g = AppState.grouping.groups.find((x) => x.id === thGid);
+      if (!g) return;
+      if (!g.rule) g.rule = { mode: 'A', keyword: '', threshold: 70 };
+      const n = Number(e.target.value);
+      g.rule.threshold = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 70;
+    }
+  });
+
+  dom.f1Result.addEventListener('input', (e) => {
+    const gid = e.target?.dataset?.f1RuleKeyword;
+    if (!gid) return;
+    const g = AppState.grouping.groups.find((x) => x.id === gid);
+    if (!g) return;
+    if (!g.rule) g.rule = { mode: 'A', keyword: '', threshold: 70 };
+    g.rule.keyword = String(e.target.value || '');
   });
 
   dom.f1CopyOutput.addEventListener('click', (e) => {
@@ -1629,6 +2163,9 @@ function bindEvents() {
   });
 
   dom.f1AddGroupBtn.addEventListener('click', () => {
+    // 先同步「預覽分組名稱」裡手動改過的名稱，避免 renderF1Draft() 重新渲染時被洗掉。
+    if (AppState.grouping.mode === 'draft') syncF1DraftEditsFromUI();
+
     const names = splitGroupNames(dom.f1NewGroupName.value);
     if (!names.length) return;
     if (AppState.grouping.mode === 'draft') {
@@ -1668,7 +2205,7 @@ function bindEvents() {
     names.forEach((name, idx) => {
       if (existing.has(name)) return;
       existing.add(name);
-      AppState.grouping.groups.push({ id: `g${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`, name, transactionIds: [] });
+      AppState.grouping.groups.push({ id: `g${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`, name, transactionIds: [], rule: { mode: 'A', keyword: '', threshold: 70 } });
       added += 1;
     });
     if (!added) {

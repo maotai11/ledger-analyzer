@@ -6,14 +6,31 @@ const AppState = {
   grouping: { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '' },
   groupingStore: {}, activeGroupingKey: 'all',
   offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], manualMatches: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '', suggestThreshold: 80, timeWindowDays: 14, subsetMaxK: 4, subsetTimeLimitMs: 1200, unmatchedView: 'review' },
-  pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [] }, crossLink: { mode: 'keyword', query: '', results: [] },
+  pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [], reviewed: new Set() }, crossLink: { mode: 'keyword', query: '', results: [] },
   gap: { results: [], periodicSuggestions: [] }, dupVoucher: { results: [] }, trendAlert: { results: [], groups: [], ungrouped: [], copyText: '' }, todos: [],
+  memo: { notes: {}, rules: [], missingResults: [] },
 };
 
 const hasFuse = typeof Fuse !== 'undefined';
 const hasDecimal = typeof Decimal !== 'undefined';
 let searchEngine = null;
 let poolWorker = null;
+// User settings persistence (localStorage) for F2 parameters
+function loadUserSettings() {
+  try {
+    const sTh = Number(localStorage.getItem("f2_suggestThreshold"));
+    const win = Number(localStorage.getItem("f2_timeWindowDays"));
+    const kmax = Number(localStorage.getItem("f2_subsetMaxK"));
+    const tol = localStorage.getItem("f2_tolerance");
+    if (Number.isFinite(sTh)) AppState.offset.suggestThreshold = sTh;
+    if (Number.isFinite(win)) AppState.offset.timeWindowDays = win;
+    if (Number.isFinite(kmax)) AppState.offset.subsetMaxK = kmax;
+    if (tol != null && dom?.f2Tolerance) { dom.f2Tolerance.value = String(tol); AppState.offset.tolerance = Number(tol); }
+  } catch { /* ignore */ }
+}
+function persistOffsetSetting(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch { /* ignore */ }
+}
 
 const dom = {
   fileInput: document.getElementById('fileInput'), resetBtn: document.getElementById('resetBtn'), metaText: document.getElementById('metaText'),
@@ -37,9 +54,24 @@ const dom = {
   exportF14Btn: document.getElementById('exportF14Btn'), f14Result: document.getElementById('f14Result'), f14List: document.getElementById('f14List'),
   f18Keyword: document.getElementById('f18Keyword'), f18Threshold: document.getElementById('f18Threshold'), runF18Btn: document.getElementById('runF18Btn'),
   copyF18TextBtn: document.getElementById('copyF18TextBtn'), exportF18Btn: document.getElementById('exportF18Btn'), f18Result: document.getElementById('f18Result'), f18List: document.getElementById('f18List'),
+  runF7Btn: document.getElementById('runF7Btn'), exportF7Btn: document.getElementById('exportF7Btn'), f7Result: document.getElementById('f7Result'),
+  exportF3Btn: document.getElementById('exportF3Btn'), exportF5Btn: document.getElementById('exportF5Btn'), exportF6Btn: document.getElementById('exportF6Btn'),
+  f3MinAmt: document.getElementById('f3MinAmt'), f3MaxAmt: document.getElementById('f3MaxAmt'),
+  mergeF1Btn: document.getElementById('mergeF1Btn'), sortF1Btn: document.getElementById('sortF1Btn'),
+  clearF4ReviewedBtn: document.getElementById('clearF4ReviewedBtn'),
+  periodFrom: document.getElementById('periodFrom'), periodTo: document.getElementById('periodTo'),
+  f9AccountSelect: document.getElementById('f9AccountSelect'), f9RuleAccount: document.getElementById('f9RuleAccount'),
+  f9Memo: document.getElementById('f9Memo'), f9SaveMemoBtn: document.getElementById('f9SaveMemoBtn'), f9MemoStatus: document.getElementById('f9MemoStatus'),
+  f9RuleKeyword: document.getElementById('f9RuleKeyword'), f9RuleFreq: document.getElementById('f9RuleFreq'), f9RuleAmount: document.getElementById('f9RuleAmount'),
+  f9AddRuleBtn: document.getElementById('f9AddRuleBtn'), f9ClearRulesBtn: document.getElementById('f9ClearRulesBtn'), f9RuleList: document.getElementById('f9RuleList'),
+  runF9Btn: document.getElementById('runF9Btn'), copyF9RequestBtn: document.getElementById('copyF9RequestBtn'), exportF9Btn: document.getElementById('exportF9Btn'), f9Result: document.getElementById('f9Result'),
   addTodoBtn: document.getElementById('addTodoBtn'), todoToggleBtn: document.getElementById('todoToggleBtn'), todoPanel: document.getElementById('todoPanel'),
   todoVoucher: document.getElementById('todoVoucher'), todoContent: document.getElementById('todoContent'),
   copyTodoAllBtn: document.getElementById('copyTodoAllBtn'), todoList: document.getElementById('todoList'), todoBadge: document.getElementById('todoBadge'), toastHost: document.getElementById('toastHost'),
+  runF10Btn: document.getElementById('runF10Btn'), f10Result: document.getElementById('f10Result'), f10Tolerance: document.getElementById('f10Tolerance'),
+  runF11Btn: document.getElementById('runF11Btn'), f11Result: document.getElementById('f11Result'), f11Field: document.getElementById('f11Field'),
+  runF13Btn: document.getElementById('runF13Btn'), f13Result: document.getElementById('f13Result'), f13AccountSelect: document.getElementById('f13AccountSelect'), f13AnomalyMode: document.getElementById('f13AnomalyMode'),
+  runF15Btn: document.getElementById('runF15Btn'), f15Result: document.getElementById('f15Result'), f15Sort: document.getElementById('f15Sort'), f15MinCount: document.getElementById('f15MinCount'), f15MaxCount: document.getElementById('f15MaxCount'),
 };
 
 function escapeHtml(v) { return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
@@ -314,12 +346,16 @@ function parseWorkbook(arrayBuffer, fileName) {
 function getFilteredTransactions() {
   let rows = AppState.transactions;
   const account = dom.accountSelect.value; const keyword = cleanText(dom.keywordInput.value);
+  const pFrom = parseRocPeriod(dom.periodFrom?.value || '');
+  const pTo = parseRocPeriod(dom.periodTo?.value || '');
   if (account && account !== 'all') rows = rows.filter((t) => t.accountCode === account);
   if (keyword) {
     if (searchEngine) {
       const ids = new Set(searchEngine.search(keyword).map((x) => x.item.id)); rows = rows.filter((t) => ids.has(t.id));
     } else rows = rows.filter((t) => t.summary.includes(keyword) || t.voucherNo.includes(keyword));
   }
+  if (pFrom) rows = rows.filter((t) => t.periodROC >= pFrom);
+  if (pTo) rows = rows.filter((t) => t.periodROC <= pTo);
   return rows;
 }
 
@@ -333,9 +369,46 @@ function renderTxnList(el, rows, note = '', opts = {}) {
   el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}</p>${show.map((t, idx) => `<details class="card" style="margin:8px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}｜${escapeHtml((t.summary || '(空白摘要)').slice(0, 50))}｜${fmtSigned(getSignedAmount(t))}</summary><div style="margin-top:8px;"><div><strong>摘要：</strong>${escapeHtml(t.summary || '(空白摘要)')}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>傳票：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>科目：</strong>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>摘要金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div></div></details>`).join('')}`;
 }
 
+function renderOverviewSummary(rows) {
+  if (!rows.length || !dom.overviewList) return;
+  const byAcc = new Map();
+  rows.forEach((t) => {
+    if (!byAcc.has(t.accountCode)) byAcc.set(t.accountCode, { code: t.accountCode, name: t.accountName, normalSide: t.accountNormalSide, debit: 0, credit: 0, count: 0, lastBal: 0 });
+    const x = byAcc.get(t.accountCode);
+    x.debit += t.debit || 0; x.credit += t.credit || 0; x.count += 1; x.lastBal = t.balance || 0;
+  });
+  const accs = Array.from(byAcc.values()).sort((a, b) => a.code.localeCompare(b.code));
+  if (!accs.length) return;
+  const totalDebit = accs.reduce((s, a) => s + a.debit, 0);
+  const totalCredit = accs.reduce((s, a) => s + a.credit, 0);
+  const summaryEl = document.getElementById('overviewSummary');
+  if (!summaryEl) return;
+  summaryEl.innerHTML = `<div style="margin-bottom:8px;font-weight:600;color:#2a4668;">篩選結果科目彙總（${accs.length} 個科目，共 ${rows.length} 筆）</div>
+    <div class="table-wrap"><table style="min-width:700px;"><thead><tr>
+      <th>科目代碼</th><th>科目名稱</th><th>借/貸</th><th>筆數</th>
+      <th class="col-amount">借方合計</th><th class="col-amount">貸方合計</th>
+      <th class="col-amount">淨額</th><th class="col-amount">末筆餘額</th>
+    </tr></thead><tbody>
+    ${accs.map((a) => {
+      const net = a.normalSide === '貸' ? a.credit - a.debit : a.debit - a.credit;
+      return `<tr>
+        <td>${escapeHtml(a.code)}</td><td>${escapeHtml(a.name)}</td><td>${escapeHtml(a.normalSide || '—')}</td><td>${a.count}</td>
+        <td class="col-amount">${fmtAmount(a.debit)}</td><td class="col-amount">${fmtAmount(a.credit)}</td>
+        <td class="col-amount" style="font-weight:600;">${fmtSigned(net)}</td>
+        <td class="col-amount">${fmtAmount(a.lastBal)}</td>
+      </tr>`;
+    }).join('')}
+    </tbody><tfoot><tr style="font-weight:600;background:#f7fafe;">
+      <td colspan="4">合計</td>
+      <td class="col-amount">${fmtAmount(totalDebit)}</td><td class="col-amount">${fmtAmount(totalCredit)}</td>
+      <td class="col-amount">${fmtSigned(totalDebit - totalCredit)}</td><td></td>
+    </tr></tfoot></table></div>`;
+}
+
 function renderBase() {
-  renderAccountSelect(); renderStats();
+  renderAccountSelect(); renderStats(); renderF9AccountSelects();
   const rows = getFilteredTransactions();
+  renderOverviewSummary(rows);
   renderTxnList(dom.overviewList, rows, `目前篩選 ${rows.length} 筆`, { collapsible: false });
   renderTxnList(dom.f1List, rows, `目前篩選 ${rows.length} 筆`);
   renderTxnList(dom.f2List, rows, `目前篩選 ${rows.length} 筆`);
@@ -485,6 +558,8 @@ function subsetSumK(cands, target, tol, kMax, timeLimitMs) {
 }
 
 function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, timeLimitMs = 1200) {
+  const totalBudgetMs = 5000; // 全部 suggest 最多跑 5 秒，避免大量未沖帳時凍結 UI
+  const totalStart = Date.now();
   const th = Math.max(0, Math.min(100, Number(thresholdPct) || 80));
   const txMap = new Map(rows.map((r) => [r.id, r]));
   const debits = rows.filter((x) => x.debit > 0);
@@ -493,6 +568,7 @@ function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, 
 
   // 借方多筆 ≈ 貸方單筆
   for (const c of credits) {
+    if (Date.now() - totalStart > totalBudgetMs) break;
     const pool = debits
       .filter((d) => withinDays(d.date, c.date, winDays))
       .map((d) => ({ id: d.id, amount: Number(d.debit || 0) }))
@@ -522,6 +598,7 @@ function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, 
 
   // 貸方多筆 ≈ 借方單筆
   for (const d of debits) {
+    if (Date.now() - totalStart > totalBudgetMs) break;
     const pool = credits
       .filter((c) => withinDays(d.date, c.date, winDays))
       .map((c) => ({ id: c.id, amount: Number(c.credit || 0) }))
@@ -596,7 +673,7 @@ function renderF2UnmatchedEditor(rows) {
           const label = `${s.reason.kind}｜Δ${fmtAmount(s.reason.delta)}｜${Math.round(s.reason.simPct)}%｜${s.reason.voucherMatch ? '同傳票' : '不同傳票'}｜±${s.reason.dayDiff ?? '-'}天`;
           const payload = `${(s.debitIds || []).join(',')}|${(s.creditIds || []).join(',')}`;
           const title = `${(d0?.summary || '').slice(0, 14)} ↔ ${(c0?.summary || '').slice(0, 14)}`;
-          return `<button data-f2-suggest="${escapeHtml(payload)}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+          return `<button data-f2-suggest="${escapeHtml(payload)}" title="${escapeHtml(title)}">${escapeHtml(label)}</button> <button data-f2-apply="${escapeHtml(payload)}" title="一鍵套用此建議">⚡套用</button>`;
         }).join('')}
       </div>`
     : `<div class="muted" style="margin-top:6px;">（目前無建議沖帳）</div>`;
@@ -625,9 +702,17 @@ function renderF2UnmatchedEditor(rows) {
 
   const maxShow = 800;
   const shown = rows.slice(0, maxShow);
+  // 帳齡：以未沖帳清單中最晚一筆日期為基準計算
+  const refDateF2 = rows.reduce((mx, t) => (t.date instanceof Date && t.date > mx ? t.date : mx), new Date(0));
+  const hasRef = refDateF2.getTime() > 0;
   dom.f2List.innerHTML = `<p class="muted">未沖帳清單 ${rows.length} 筆（顯示前 ${shown.length} 筆）｜勾選 2 筆（一借一貸）→「勾選加入沖帳」</p>
-    <div class="table-wrap"><table><thead><tr><th>勾選</th><th>日期</th><th>傳票</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th></tr></thead><tbody>
-    ${shown.map((t) => `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`).join('')}
+    <div class="table-wrap"><table><thead><tr><th>勾選</th><th>日期</th><th>帳齡(天)</th><th>傳票</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th></tr></thead><tbody>
+    ${shown.map((t) => {
+      const ageDays = hasRef && t.date instanceof Date ? daysBetween(t.date, refDateF2) : null;
+      const ageText = ageDays !== null ? String(ageDays) : '—';
+      const ageStyle = ageDays !== null && ageDays > 90 ? 'color:#cf1322;font-weight:600;' : ageDays > 30 ? 'color:#d46b08;' : 'color:#5f7692;';
+      return `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td style="${ageStyle}">${ageText}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`;
+    }).join('')}
     </tbody></table></div>`;
 }
 
@@ -808,12 +893,13 @@ function renderF1Output() {
     const sumSigned = txns.reduce((a, b) => a + getSignedAmount(b), 0);
     const byAccount = new Map();
     txns.forEach((t) => {
-      byAccount.set(t.accountCode, (byAccount.get(t.accountCode) || 0) + getSignedAmount(t));
+      if (!byAccount.has(t.accountCode)) byAccount.set(t.accountCode, { debit: 0, credit: 0, signed: 0 });
+      const x = byAccount.get(t.accountCode);
+      x.debit += t.debit || 0; x.credit += t.credit || 0; x.signed += getSignedAmount(t);
     });
-    const checks = Array.from(byAccount.entries()).map(([acc, total]) => {
-      const lastBal = accountLastBalance.get(acc) || 0;
-      const ok = Math.abs(total - lastBal) <= 0.01;
-      return `<div class="${ok ? 'ok' : 'danger'}">[${escapeHtml(acc)}] 分組合計 ${fmtSigned(total)} / 最後餘額 ${fmtAmount(lastBal)} ${ok ? 'OK' : '不一致'}</div>`;
+    const checks = Array.from(byAccount.entries()).map(([acc, totals]) => {
+      const lastBal = accountLastBalance.get(acc) ?? 0;
+      return `<div class="muted">[${escapeHtml(acc)}] 本組：借 ${fmtAmount(totals.debit)} ／貸 ${fmtAmount(totals.credit)} ／淨額 ${fmtSigned(totals.signed)}｜科目末筆餘額 ${fmtAmount(lastBal)}</div>`;
     }).join('');
     const anchorId = asGroupAnchor(g.id);
     const rule = g.rule || (g.rule = { mode: 'A', keyword: '', threshold: 70 });
@@ -1062,10 +1148,38 @@ function renderF3Groups(rows, noteText = '') {
   renderTxnList(dom.f3List, ungroupedRows, `未分組 ${ungroupedRows.length} 筆`);
 }
 
+function renderF3CandidateList(rows) {
+  const direction = dom.f3Direction.value;
+  const minAmt = Number(dom.f3MinAmt?.value || 0) || 0;
+  const maxAmt = Number(dom.f3MaxAmt?.value || 0) || 0;
+  let cands = rows.filter((t) => direction === 'debit' ? t.debit > 0 : t.credit > 0);
+  if (minAmt > 0) cands = cands.filter((t) => (direction === 'debit' ? t.debit : t.credit) >= minAmt);
+  if (maxAmt > 0) cands = cands.filter((t) => (direction === 'debit' ? t.debit : t.credit) <= maxAmt);
+  const show = cands.slice(0, 300);
+  dom.f3List.innerHTML = `<p class="muted">候選 ${cands.length} 筆（點擊金額欄可自動填入目標）${cands.length > 300 ? '｜僅顯示前 300 筆' : ''}</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th>
+      <th class="col-amount" title="點擊金額可填入目標">金額 ▶ 點填目標</th>
+    </tr></thead><tbody>
+    ${show.map((t) => {
+      const amt = direction === 'debit' ? t.debit : t.credit;
+      return `<tr><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}]</td><td>${escapeHtml((t.summary || '(空白)').slice(0, 35))}</td><td class="col-amount" style="cursor:pointer;color:#165dff;text-decoration:underline dotted;" data-f3-set-target="${amt}">${fmtAmount(amt)}</td></tr>`;
+    }).join('')}
+    </tbody></table></div>`;
+}
+
 function runF3() {
   const rows = getFilteredTransactions(); const direction = dom.f3Direction.value;
   const target = Number(dom.f3Target.value || 0); const tolerance = Number(dom.f3Tolerance.value || 0.01);
-  const candidates = rows.filter((x) => (direction === 'debit' ? x.debit > 0 : x.credit > 0)).map((x) => ({ id: x.id, amount: direction === 'debit' ? x.debit : x.credit }));
+  const minAmt = Number(dom.f3MinAmt?.value || 0) || 0;
+  const maxAmt = Number(dom.f3MaxAmt?.value || 0) || 0;
+  const candidates = rows.filter((x) => {
+    const amt = direction === 'debit' ? x.debit : x.credit;
+    if (amt <= 0) return false;
+    if (minAmt > 0 && amt < minAmt) return false;
+    if (maxAmt > 0 && amt > maxAmt) return false;
+    return true;
+  }).map((x) => ({ id: x.id, amount: direction === 'debit' ? x.debit : x.credit }));
   AppState.pool.candidateIds = candidates.map((x) => x.id);
 
   if (candidates.length > 200) {
@@ -1073,26 +1187,45 @@ function runF3() {
     AppState.pool.groups = [];
     AppState.pool.ungrouped = AppState.pool.candidateIds.slice();
     AppState.pool.copyText = '';
-    dom.f3Result.innerHTML = `<p class="danger">目前 ${candidates.length} 筆，請縮小至 200 筆以下。</p>`;
-    renderTxnList(dom.f3List, rows.filter((r) => AppState.pool.candidateIds.includes(r.id)), `候選 ${candidates.length} 筆`);
+    dom.f3Result.innerHTML = `<p class="danger">目前 ${candidates.length} 筆，超過 200 筆上限。請縮小科目範圍或設定金額上下限篩選。</p>`;
+    renderF3CandidateList(rows);
     return;
   }
 
   if (candidates.length <= 30) {
     const r = bruteSubset(candidates, target, tolerance, 3000); AppState.pool.results = r.results;
     buildF3GroupsFromResults(rows);
+    renderF3CandidateList(rows);
     renderF3Groups(rows, r.results.length ? `結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
     return;
   }
 
-  if (!poolWorker) poolWorker = new Worker('pool.worker.js');
-  dom.runF3Btn.disabled = true; dom.f3Result.innerHTML = `<p class="muted">計算中...</p>`;
-  poolWorker.onmessage = (ev) => {
-    AppState.pool.results = ev.data.results || []; dom.runF3Btn.disabled = false;
+  const runWorkerFallback = () => {
+    dom.runF3Btn.disabled = false;
+    const r = bruteSubset(candidates, target, tolerance, 3000);
+    AppState.pool.results = r.results;
     buildF3GroupsFromResults(rows);
-    renderF3Groups(rows, AppState.pool.results.length ? `結果 ${AppState.pool.results.length} 組｜耗時 ${ev.data.elapsed}ms${ev.data.interrupted ? '｜已中斷' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
+    renderF3CandidateList(rows);
+    renderF3Groups(rows, r.results.length ? `結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷（同步模式）' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
   };
-  poolWorker.postMessage({ candidates, target, tolerance, timeLimit: 3000 });
+  try {
+    if (!poolWorker) poolWorker = new Worker('pool.worker.js');
+    dom.runF3Btn.disabled = true; dom.f3Result.innerHTML = `<p class="muted">計算中...</p>`;
+    const workerTimeout = setTimeout(() => { poolWorker = null; runWorkerFallback(); toast('Worker 逾時，改用同步模式', 'WARN'); }, 8000);
+    poolWorker.onerror = () => { clearTimeout(workerTimeout); poolWorker = null; runWorkerFallback(); };
+    poolWorker.onmessage = (ev) => {
+      clearTimeout(workerTimeout);
+      AppState.pool.results = ev.data.results || []; dom.runF3Btn.disabled = false;
+      buildF3GroupsFromResults(rows);
+      renderF3CandidateList(rows);
+      renderF3Groups(rows, AppState.pool.results.length ? `結果 ${AppState.pool.results.length} 組｜耗時 ${ev.data.elapsed}ms${ev.data.interrupted ? '｜已中斷' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
+    };
+    poolWorker.postMessage({ candidates, target, tolerance, timeLimit: 3000 });
+  } catch {
+    poolWorker = null;
+    runWorkerFallback();
+    toast('Worker 不可用，已改用同步模式', 'WARN');
+  }
 }
 function percentile(sorted, p) { if (!sorted.length) return 0; const idx = (sorted.length - 1) * p; const lo = Math.floor(idx); const hi = Math.ceil(idx); if (lo === hi) return sorted[lo]; return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo); }
 
@@ -1121,7 +1254,7 @@ function runF4() {
     if (t.accountNormalSide === '借' && t.credit > 0) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'D', severity: 'WARN', accountCode: t.accountCode, transactionIds: [t.id], description: '借方科目出現貸方發生額' });
     if (t.accountNormalSide === '貸' && t.debit > 0) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'D', severity: 'WARN', accountCode: t.accountCode, transactionIds: [t.id], description: '貸方科目出現借方發生額' });
     const amount = Math.abs((t.debit || 0) - (t.credit || 0));
-    if (amount >= 100000 && amount % 1000 === 0) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'E', severity: 'INFO', accountCode: t.accountCode, transactionIds: [t.id], description: '整數金額大額' });
+    if (amount >= 100000 && Math.round(amount) % 1000 === 0) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'E', severity: 'INFO', accountCode: t.accountCode, transactionIds: [t.id], description: '整數金額大額' });
     if (t.accountNormalSide === '借' && t.balance < 0) results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'F', severity: 'ERROR', accountCode: t.accountCode, transactionIds: [t.id], description: '借方科目餘額<0' });
   });
 
@@ -1178,6 +1311,36 @@ function runF4() {
     }
   });
 
+  // Rule I: 週末交易（週六/週日），依科目彙整
+  const weekendByAcc = new Map();
+  rows.forEach((t) => {
+    const dow = t.date instanceof Date ? t.date.getDay() : -1;
+    if (dow !== 0 && dow !== 6) return;
+    if (!weekendByAcc.has(t.accountCode)) weekendByAcc.set(t.accountCode, []);
+    weekendByAcc.get(t.accountCode).push(t);
+  });
+  weekendByAcc.forEach((txns, acc) => {
+    results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'I', severity: 'INFO', accountCode: acc, transactionIds: txns.map((t) => t.id), description: `週末交易 ${txns.length} 筆 [${acc}]（${txns.map((t) => `${t.dateROC}(${['日','一','二','三','四','五','六'][t.date.getDay()]})`).slice(0, 5).join('、')}${txns.length > 5 ? '…' : ''}）` });
+  });
+
+  // Rule J: 月末集中（某月 ≥5 筆且月末3日佔比 >50%）
+  const byMonthLast = new Map();
+  rows.forEach((t) => {
+    if (!(t.date instanceof Date)) return;
+    const lastDay = new Date(t.date.getFullYear(), t.date.getMonth() + 1, 0).getDate();
+    const isLastThree = t.date.getDate() >= lastDay - 2;
+    const key = `${t.accountCode}||${t.periodROC}`;
+    if (!byMonthLast.has(key)) byMonthLast.set(key, { total: 0, lastThree: 0, txnIds: [], acc: t.accountCode, period: t.periodROC });
+    const x = byMonthLast.get(key);
+    x.total++;
+    if (isLastThree) { x.lastThree++; x.txnIds.push(t.id); }
+  });
+  byMonthLast.forEach((v) => {
+    if (v.total >= 5 && v.lastThree / v.total > 0.5) {
+      results.push({ id: Math.random().toString(36).slice(2, 10), rule: 'J', severity: 'WARN', accountCode: v.acc, transactionIds: v.txnIds, description: `月末集中：[${v.acc}] ${v.period} 月末3日佔 ${Math.round(v.lastThree / v.total * 100)}%（${v.lastThree}/${v.total} 筆）` });
+    }
+  });
+
   AppState.anomaly.results = results;
   const hit = new Set(results.flatMap((r) => r.transactionIds)); const remain = rows.filter((r) => !hit.has(r.id));
   if (!results.length) {
@@ -1195,13 +1358,17 @@ function runF4() {
   const cards = Array.from(groupMap.values()).map((g, idx) => {
     const ids = Array.from(new Set(g.ids));
     const list = ids.map((id) => txMap.get(id)).filter(Boolean);
-    return `<details class="card" style="margin:8px 0;" open><summary><strong>${idx + 1}. [${g.rule}] ${escapeHtml(g.description)}</strong>｜${g.severity}｜${list.length} 筆</summary>
+    const reviewKey = `${g.rule}||${g.description}`;
+    const isReviewed = AppState.anomaly.reviewed.has(reviewKey);
+    const cardStyle = isReviewed ? 'margin:8px 0;opacity:0.5;' : 'margin:8px 0;';
+    return `<details class="card" style="${cardStyle}" ${isReviewed ? '' : 'open'}><summary><strong>${idx + 1}. [${g.rule}] ${escapeHtml(g.description)}</strong>｜${g.severity}｜${list.length} 筆 <button data-f4-review="${escapeHtml(reviewKey)}" style="margin-left:12px;font-size:12px;">${isReviewed ? '取消已審閱' : '✓ 標記已審閱'}</button></summary>
       <div class="table-wrap"><table><thead><tr><th>傳票號碼</th><th>日期</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th><th class="col-amount">餘額</th></tr></thead><tbody>
       ${list.map((t) => `<tr><td>${escapeHtml(t.voucherNo || '')}</td><td>${escapeHtml(t.dateROC)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}
       </tbody></table></div>
     </details>`;
   }).join('');
-  dom.f4Result.innerHTML = `<p class="muted">異常分組 ${groupMap.size} 組</p>${cards}`;
+  const reviewedCount = Array.from(groupMap.keys()).filter((k) => AppState.anomaly.reviewed.has(k)).length;
+  dom.f4Result.innerHTML = `<p class="muted">異常分組 ${groupMap.size} 組${reviewedCount ? `｜已審閱 ${reviewedCount} 組` : ''}</p>${cards}`;
   renderTxnList(dom.f4List, remain, `未命中異常 ${remain.length} 筆`);
 }
 
@@ -1216,8 +1383,7 @@ function runF5() {
   if (matched.length > 500) matched = matched.slice(0, 500);
   AppState.crossLink = { mode, query, results: matched };
   const hit = new Set(matched.map((m) => m.id)); const remain = rows.filter((r) => !hit.has(r.id));
-  dom.f5Result.innerHTML = matched.length ? `<p class="muted">命中 ${matched.length} 筆</p>` : `<p class="muted">命中 0 筆，仍顯示剩餘 ${remain.length} 筆。</p>`;
-  renderTxnList(dom.f5Result, matched, `命中 ${matched.length} 筆`);
+  renderTxnList(dom.f5Result, matched, matched.length ? `命中 ${matched.length} 筆` : `命中 0 筆，仍顯示剩餘 ${remain.length} 筆`);
   renderTxnList(dom.f5List, remain, `剩餘 ${remain.length} 筆`);
 }
 
@@ -1301,7 +1467,7 @@ function renderF18Groups(rows) {
     const anchorId = asScopedAnchor('f18-group', g.id);
     const trend = AppState.trendAlert.results.find((r) => r.keyword === (g.sourceKeyword || g.name));
     const trendHtml = trend?.monthlyData?.length
-      ? `<div class="table-wrap" style="margin:8px 0;"><table><thead><tr><th>月份</th><th class="col-amount">金額</th><th class="col-amount">前月</th><th class="col-amount">變動率(%)</th><th>狀態</th></tr></thead><tbody>${trend.monthlyData.map((m) => `<tr><td>${m.period}</td><td class="col-amount">${fmtAmount(m.amount)}</td><td class="col-amount">${m.prevAmount == null ? '—' : fmtAmount(m.prevAmount)}</td><td class="col-amount">${m.changeRate == null ? '—' : `${m.changeRate.toFixed(1)}%`}</td><td>${m.changeRate == null ? '—' : m.flagged ? '<span class="danger">超標</span>' : '<span class="ok">正常</span>'}</td></tr>`).join('')}</tbody></table></div>`
+      ? `<div style="margin:8px 0;"><button data-f18-copy-table="${escapeHtml(g.sourceKeyword || g.name)}" style="margin-bottom:6px;font-size:12px;">複製月份表格（貼入 Excel）</button><div class="table-wrap"><table><thead><tr><th>月份</th><th class="col-amount">金額</th><th class="col-amount">前月</th><th class="col-amount">變動率(%)</th><th>狀態</th></tr></thead><tbody>${trend.monthlyData.map((m) => `<tr><td>${m.period}</td><td class="col-amount">${fmtAmount(m.amount)}</td><td class="col-amount">${m.prevAmount == null ? '—' : fmtAmount(m.prevAmount)}</td><td class="col-amount">${m.changeRate == null ? '—' : `${m.changeRate.toFixed(1)}%`}</td><td>${m.changeRate == null ? '—' : m.flagged ? '<span class="danger">超標</span>' : '<span class="ok">正常</span>'}</td></tr>`).join('')}</tbody></table></div></div>`
       : '<p class="muted">此關鍵字無月資料</p>';
     return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
       <summary><strong>群組：</strong><input data-f18-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" />｜筆數 ${txns.length}｜合計 ${fmtSigned(total)} <button data-f18-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
@@ -1367,6 +1533,388 @@ function runF18() {
   renderF18Groups(allRows);
 }
 function csvEscape(v) { const s = String(v ?? ''); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replaceAll('"', '""')}"` : s; }
+// ---- F9 Account Memo & Request List ----
+function loadMemoStorage() {
+  try {
+    const n = JSON.parse(localStorage.getItem('memo_notes') || '{}');
+    const r = JSON.parse(localStorage.getItem('memo_rules') || '[]');
+    AppState.memo.notes = (n && typeof n === 'object') ? n : {};
+    AppState.memo.rules = Array.isArray(r) ? r : [];
+  } catch { AppState.memo.notes = {}; AppState.memo.rules = []; }
+}
+function saveMemoStorage() {
+  try {
+    localStorage.setItem('memo_notes', JSON.stringify(AppState.memo.notes));
+    localStorage.setItem('memo_rules', JSON.stringify(AppState.memo.rules));
+  } catch { /* ignore */ }
+}
+function renderF9AccountSelects() {
+  const allOpt = '<option value="">（全科目）</option>';
+  const opts = Object.values(AppState.accounts).sort((a, b) => a.code.localeCompare(b.code))
+    .map((a) => `<option value="${escapeHtml(a.code)}">[${escapeHtml(a.code)}] ${escapeHtml(a.name)}${a.normalSide ? `（${escapeHtml(a.normalSide)}）` : ''}</option>`).join('');
+  if (dom.f9AccountSelect) dom.f9AccountSelect.innerHTML = allOpt + opts;
+  if (dom.f9RuleAccount) dom.f9RuleAccount.innerHTML = allOpt + opts;
+  // F13 只列實際科目（不含「全科目」選項）
+  if (dom.f13AccountSelect) dom.f13AccountSelect.innerHTML = '<option value="">（請選擇科目）</option>' + opts;
+}
+function renderF9Memo() {
+  const code = dom.f9AccountSelect?.value || '';
+  if (dom.f9Memo) dom.f9Memo.value = AppState.memo.notes[code] || '';
+  if (dom.f9MemoStatus) dom.f9MemoStatus.textContent = '';
+}
+function renderF9Rules() {
+  if (!dom.f9RuleList) return;
+  if (!AppState.memo.rules.length) { dom.f9RuleList.innerHTML = '<p class="muted">尚無規則。</p>'; return; }
+  const freqLabel = (f) => f === 'monthly' ? '每月' : f === 'yearly' ? '每年' : '只查有無';
+  dom.f9RuleList.innerHTML = `<div class="table-wrap"><table style="min-width:500px;"><thead><tr><th>科目</th><th>關鍵字</th><th>頻率</th><th>預期金額</th><th>操作</th></tr></thead><tbody>
+    ${AppState.memo.rules.map((r, idx) => {
+      const accName = r.accountCode ? `[${escapeHtml(r.accountCode)}] ${escapeHtml(AppState.accounts[r.accountCode]?.name || r.accountCode)}` : '（全科目）';
+      return `<tr><td>${accName}</td><td>${escapeHtml(r.keyword)}</td><td>${freqLabel(r.frequency)}</td><td>${r.expectedAmount ? fmtAmount(r.expectedAmount) : '—'}</td><td><button data-f9-del-rule="${idx}">刪除</button></td></tr>`;
+    }).join('')}
+  </tbody></table></div>`;
+}
+function runF9Missing() {
+  const results = [];
+  for (const rule of AppState.memo.rules) {
+    let rows = AppState.transactions;
+    if (rule.accountCode) rows = rows.filter((t) => t.accountCode === rule.accountCode);
+    if (rule.keyword) rows = rows.filter((t) => (t.summary || '').includes(rule.keyword));
+    const accName = rule.accountCode ? (AppState.accounts[rule.accountCode]?.name || rule.accountCode) : '全科目';
+    if (rule.frequency === 'any') {
+      results.push({ rule, accName, missing: [], found: rows.length, note: rows.length ? `找到 ${rows.length} 筆` : '找不到任何相關分錄' });
+      continue;
+    }
+    const byPeriod = new Map();
+    rows.forEach((t) => {
+      const period = rule.frequency === 'yearly' ? (t.periodROC || '').slice(0, t.periodROC?.indexOf('-') > 0 ? t.periodROC.indexOf('-') : 3) : t.periodROC;
+      if (!period) return;
+      if (!byPeriod.has(period)) byPeriod.set(period, []);
+      byPeriod.get(period).push(t);
+    });
+    // Build full expected period range from ALL transactions of the account
+    let allAccRows = AppState.transactions;
+    if (rule.accountCode) allAccRows = allAccRows.filter((t) => t.accountCode === rule.accountCode);
+    const allPeriods = new Set();
+    allAccRows.forEach((t) => {
+      const p = rule.frequency === 'yearly' ? (t.periodROC || '').slice(0, t.periodROC?.indexOf('-') > 0 ? t.periodROC.indexOf('-') : 3) : t.periodROC;
+      if (p) allPeriods.add(p);
+    });
+    const sorted = Array.from(allPeriods).sort();
+    const missing = [];
+    if (sorted.length >= 2) {
+      if (rule.frequency === 'monthly') {
+        const parseP = (p) => { const [y, m] = p.split('-').map(Number); return { y, m }; };
+        const { y: fy, m: fm } = parseP(sorted[0]);
+        const { y: ly, m: lm } = parseP(sorted[sorted.length - 1]);
+        let cy = fy, cm = fm;
+        while (cy < ly || (cy === ly && cm <= lm)) {
+          const key = `${cy}-${String(cm).padStart(2, '0')}`;
+          if (!byPeriod.has(key)) missing.push(key);
+          cm++; if (cm > 12) { cm = 1; cy++; }
+        }
+      } else {
+        const fy = Number(sorted[0]); const ly = Number(sorted[sorted.length - 1]);
+        for (let y = fy; y <= ly; y++) { if (!byPeriod.has(String(y))) missing.push(String(y)); }
+      }
+    }
+    results.push({ rule, accName, missing, found: byPeriod.size, note: '' });
+  }
+  AppState.memo.missingResults = results;
+  return results;
+}
+function renderF9Result(results) {
+  if (!results.length) { dom.f9Result.innerHTML = '<p class="muted">尚無規則，請先新增規則。</p>'; return; }
+  const cards = results.map((r, idx) => {
+    const accLabel = r.rule.accountCode ? `[${escapeHtml(r.rule.accountCode)}] ${escapeHtml(r.accName)}` : '全科目';
+    const freqLabel = r.rule.frequency === 'monthly' ? '每月' : r.rule.frequency === 'yearly' ? '每年' : '只查有無';
+    const amtLabel = r.rule.expectedAmount ? `｜預期金額 ${fmtAmount(r.rule.expectedAmount)}` : '';
+    const statusHtml = r.missing.length
+      ? `<div class="danger" style="margin-top:6px;"><strong>缺少 ${r.missing.length} 個期間：</strong>${escapeHtml(r.missing.join('、'))}</div>`
+      : r.note
+        ? `<div class="warn" style="margin-top:6px;">${escapeHtml(r.note)}</div>`
+        : `<div class="ok" style="margin-top:6px;">全部期間均有分錄 ✓（共 ${r.found} 個期間）</div>`;
+    // Show memo for this account
+    const memo = r.rule.accountCode ? (AppState.memo.notes[r.rule.accountCode] || '') : '';
+    const memoHtml = memo ? `<div class="muted" style="margin-top:4px;font-style:italic;">備忘：${escapeHtml(memo)}</div>` : '';
+    return `<details class="card" style="margin:8px 0;" open>
+      <summary><strong>${idx + 1}. ${accLabel}</strong>｜${escapeHtml(r.rule.keyword || '(無關鍵字)')}｜${freqLabel}${amtLabel}</summary>
+      ${memoHtml}${statusHtml}
+    </details>`;
+  }).join('');
+  const totalMissing = results.reduce((s, r) => s + r.missing.length, 0);
+  dom.f9Result.innerHTML = `<p class="muted">掃描 ${results.length} 條規則｜共缺少 <strong class="${totalMissing ? 'danger' : 'ok'}">${totalMissing}</strong> 個期間</p>${cards}`;
+}
+function buildF9RequestText() {
+  const results = AppState.memo.missingResults || [];
+  if (!results.length) return '（尚無掃描結果，請先按「掃描缺少分錄」）';
+  const missGroups = results.filter((r) => r.missing.length > 0 || (r.rule.frequency === 'any' && !r.found));
+  let text = `索取清單\n製表時間：${new Date().toLocaleString('zh-TW')}\n${'='.repeat(40)}\n\n`;
+  if (!missGroups.length) { text += '✓ 所有期望分錄均已找到，無缺少項目。\n'; return text; }
+  missGroups.forEach((r) => {
+    const accLabel = r.rule.accountCode ? `[${r.rule.accountCode}] ${r.accName}` : '全科目';
+    const freqLabel = r.rule.frequency === 'monthly' ? '（每月）' : r.rule.frequency === 'yearly' ? '（每年）' : '';
+    text += `科目：${accLabel}\n`;
+    text += `項目：${r.rule.keyword || '(無關鍵字)'}${freqLabel}`;
+    if (r.rule.expectedAmount) text += `（預期金額約 ${fmtAmount(r.rule.expectedAmount)} 元）`;
+    text += '\n';
+    if (r.missing.length) text += `缺少期間：${r.missing.join('、')}\n`;
+    else text += `缺少：找不到任何相關分錄\n`;
+    const memo = r.rule.accountCode ? (AppState.memo.notes[r.rule.accountCode] || '') : '';
+    if (memo) text += `備忘：${memo}\n`;
+    text += '\n';
+  });
+  text += `${'='.repeat(40)}\n請儘速提供上述缺少之憑證及相關資料，謝謝。`;
+  return text;
+}
+// ---- end F9 ----
+
+// ---- F7 Trial Balance ----
+function computeTrialBalance() {
+  const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+  const rows = Object.values(AppState.accounts).sort((a, b) => a.code.localeCompare(b.code)).map((acc) => {
+    const txns = (acc.transactionIds || []).map((id) => txMap.get(id)).filter(Boolean);
+    const totalDebit = txns.reduce((s, t) => s + (t.debit || 0), 0);
+    const totalCredit = txns.reduce((s, t) => s + (t.credit || 0), 0);
+    const opening = acc.openingBalance ?? 0;
+    let closing;
+    if (acc.normalSide === '貸') closing = opening + totalCredit - totalDebit;
+    else closing = opening + totalDebit - totalCredit;
+    const lastTxn = txns[txns.length - 1];
+    const lastBal = lastTxn ? lastTxn.balance : null;
+    const balOk = lastBal === null || Math.abs(closing - lastBal) < 0.02;
+    return { code: acc.code, name: acc.name, normalSide: acc.normalSide || '—', opening, totalDebit, totalCredit, closing, lastBal, balOk, txnCount: txns.length };
+  });
+  const grandDebit = rows.reduce((s, r) => s + r.totalDebit, 0);
+  const grandCredit = rows.reduce((s, r) => s + r.totalCredit, 0);
+  const balanced = Math.abs(grandDebit - grandCredit) < 0.02;
+  return { rows, grandDebit, grandCredit, balanced };
+}
+
+function renderTrialBalance() {
+  if (!AppState.transactions.length) return toast('請先上傳分類帳', 'WARN');
+  const { rows, grandDebit, grandCredit, balanced } = computeTrialBalance();
+  const balClass = balanced ? 'ok' : 'danger';
+  const balLabel = balanced ? '借貸平衡 ✓' : `借貸不平衡！差額 ${fmtAmount(Math.abs(grandDebit - grandCredit))}`;
+  const badRows = rows.filter((r) => !r.balOk);
+  const warnHtml = badRows.length
+    ? `<div class="warn" style="margin-bottom:8px;">⚠ 下列科目期末餘額與帳上最後一筆餘額不符：${badRows.map((r) => `[${escapeHtml(r.code)}] ${escapeHtml(r.name)}`).join('、')}</div>`
+    : '';
+  dom.f7Result.innerHTML = `${warnHtml}<div class="${balClass}" style="font-weight:600;margin-bottom:8px;">${escapeHtml(balLabel)}</div>
+<div class="table-wrap"><table style="min-width:800px;"><thead><tr>
+  <th>科目代碼</th><th>科目名稱</th><th>借/貸</th><th>筆數</th>
+  <th class="col-amount">期初餘額</th>
+  <th class="col-amount">本期借方</th>
+  <th class="col-amount">本期貸方</th>
+  <th class="col-amount">期末餘額（計算）</th>
+  <th class="col-amount">帳上末筆餘額</th>
+  <th>核對</th>
+</tr></thead><tbody>
+${rows.map((r) => `<tr>
+  <td>${escapeHtml(r.code)}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.normalSide)}</td><td>${r.txnCount}</td>
+  <td class="col-amount">${fmtAmount(r.opening)}</td>
+  <td class="col-amount">${fmtAmount(r.totalDebit)}</td>
+  <td class="col-amount">${fmtAmount(r.totalCredit)}</td>
+  <td class="col-amount">${fmtAmount(r.closing)}</td>
+  <td class="col-amount">${r.lastBal === null ? '—' : fmtAmount(r.lastBal)}</td>
+  <td>${r.balOk ? '<span class="ok">OK</span>' : '<span class="danger">不一致</span>'}</td>
+</tr>`).join('')}
+</tbody><tfoot><tr style="font-weight:600;background:#f7fafe;">
+  <td colspan="5">合計</td>
+  <td class="col-amount">${fmtAmount(grandDebit)}</td>
+  <td class="col-amount">${fmtAmount(grandCredit)}</td>
+  <td class="col-amount" colspan="3"><span class="${balClass}">${escapeHtml(balLabel)}</span></td>
+</tr></tfoot></table></div>`;
+}
+
+// ---- end F7 ----
+
+// ---- F10 傳票借貸平衡驗證 ----
+function runF10() {
+  const rows = getFilteredTransactions();
+  if (!rows.length) return toast('請先上傳分類帳', 'WARN');
+  const tol = Math.max(0, Number(dom.f10Tolerance?.value ?? 0.02) || 0.02);
+  const byVoucher = new Map();
+  rows.forEach((t) => {
+    if (!byVoucher.has(t.voucherNo)) byVoucher.set(t.voucherNo, { debit: 0, credit: 0, accounts: new Set(), txns: [] });
+    const v = byVoucher.get(t.voucherNo);
+    v.debit += t.debit || 0;
+    v.credit += t.credit || 0;
+    v.accounts.add(`[${t.accountCode}] ${t.accountName}`);
+    v.txns.push(t);
+  });
+  const unbalanced = []; const balanced = [];
+  byVoucher.forEach((v, vno) => {
+    const delta = v.debit - v.credit;
+    const entry = { voucherNo: vno, debit: v.debit, credit: v.credit, delta, accounts: Array.from(v.accounts), txns: v.txns };
+    if (Math.abs(delta) > tol) unbalanced.push(entry); else balanced.push(entry);
+  });
+  unbalanced.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  if (!unbalanced.length) {
+    dom.f10Result.innerHTML = `<p class="ok" style="font-weight:600;">✓ 全部 ${byVoucher.size} 張傳票均借貸平衡（容差 ${tol}）。</p>`;
+    return;
+  }
+  const cards = unbalanced.map((u, idx) => `<details class="card" style="margin:8px 0;" open>
+    <summary><strong>${idx + 1}. 傳票 ${escapeHtml(u.voucherNo)}</strong>｜借 ${fmtAmount(u.debit)}｜貸 ${fmtAmount(u.credit)}｜<span class="danger">差額 ${fmtSigned(u.delta)}</span>｜${u.accounts.map(escapeHtml).join('、')}</summary>
+    <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>日期</th><th>科目</th><th>摘要</th><th class="col-amount">借方</th><th class="col-amount">貸方</th></tr></thead><tbody>
+    ${u.txns.map((t) => `<tr><td>${escapeHtml(t.dateROC)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${t.debit ? fmtAmount(t.debit) : ''}</td><td class="col-amount">${t.credit ? fmtAmount(t.credit) : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+  </details>`).join('');
+  dom.f10Result.innerHTML = `<p class="muted">傳票數 ${byVoucher.size}｜<span class="ok">平衡 ${balanced.length}</span>｜<span class="danger">不平衡 ${unbalanced.length}</span>（容差 ${tol}）</p>${cards}`;
+}
+// ---- end F10 ----
+
+// ---- F11 科目月份矩陣 ----
+function runF11() {
+  const rows = getFilteredTransactions();
+  if (!rows.length) return toast('請先上傳分類帳', 'WARN');
+  const field = dom.f11Field?.value || 'net';
+  const accounts = Array.from(new Set(rows.map((t) => t.accountCode))).sort((a, b) => a.localeCompare(b));
+  const months = Array.from(new Set(rows.map((t) => t.periodROC))).sort();
+  const matrix = new Map();
+  rows.forEach((t) => {
+    const key = `${t.accountCode}||${t.periodROC}`;
+    if (!matrix.has(key)) matrix.set(key, { net: 0, debit: 0, credit: 0, count: 0 });
+    const x = matrix.get(key);
+    x.net += getSignedAmount(t); x.debit += t.debit || 0; x.credit += t.credit || 0; x.count += 1;
+  });
+  const accInfo = new Map(Object.values(AppState.accounts).map((a) => [a.code, a]));
+  const getValue = (acc, mon) => {
+    const v = matrix.get(`${acc}||${mon}`);
+    if (!v) return null;
+    return field === 'count' ? v.count : field === 'debit' ? v.debit : field === 'credit' ? v.credit : v.net;
+  };
+  const allVals = [];
+  accounts.forEach((acc) => months.forEach((mon) => { const v = getValue(acc, mon); if (v !== null) allVals.push(Math.abs(v)); }));
+  const maxVal = Math.max(...allVals, 1);
+  const cellStyle = (val) => {
+    if (val === null || val === 0) return '';
+    const alpha = (0.07 + Math.min(1, Math.abs(val) / maxVal) * 0.28).toFixed(2);
+    if (field === 'count') return `background:rgba(22,93,255,${alpha});`;
+    return val > 0 ? `background:rgba(35,120,4,${alpha});` : `background:rgba(207,19,34,${alpha});`;
+  };
+  const fmt = (val) => val === null ? '' : field === 'count' ? String(val) : fmtSigned(val);
+  const fmtTotal = (val) => field === 'count' ? String(val) : fmtSigned(val);
+  const header = `<tr><th>科目</th>${months.map((m) => `<th class="col-amount" style="white-space:nowrap;">${escapeHtml(m)}</th>`).join('')}<th class="col-amount">合計</th></tr>`;
+  const bodyRows = accounts.map((acc) => {
+    const info = accInfo.get(acc);
+    const rowVals = months.map((m) => getValue(acc, m));
+    const rowTotal = rowVals.reduce((s, v) => s + (v !== null ? v : 0), 0);
+    const cells = rowVals.map((v, i) => `<td class="col-amount" style="${cellStyle(v)}">${fmt(v)}</td>`).join('');
+    return `<tr><td style="white-space:nowrap;" title="${escapeHtml(info?.name || acc)}">[${escapeHtml(acc)}]<span class="muted"> ${escapeHtml((info?.name || '').slice(0, 6))}</span></td>${cells}<td class="col-amount" style="font-weight:600;">${fmtTotal(rowTotal)}</td></tr>`;
+  }).join('');
+  const colTotals = months.map((m) => accounts.reduce((s, acc) => { const v = getValue(acc, m); return s + (v !== null ? v : 0); }, 0));
+  const grandTotal = colTotals.reduce((a, b) => a + b, 0);
+  const footRow = `<tr style="font-weight:600;background:#f7fafe;"><td>合計</td>${colTotals.map((v) => `<td class="col-amount">${fmtTotal(v)}</td>`).join('')}<td class="col-amount">${fmtTotal(grandTotal)}</td></tr>`;
+  const fieldLabel = { net: '淨額', debit: '借方合計', credit: '貸方合計', count: '筆數' }[field];
+  dom.f11Result.innerHTML = `<p class="muted">${accounts.length} 個科目 × ${months.length} 個月份｜顯示：${fieldLabel}｜顏色深淺代表相對金額大小</p>
+    <div class="table-wrap"><table style="min-width:${Math.max(600, months.length * 110 + 220)}px;">
+      <thead>${header}</thead><tbody>${bodyRows}</tbody><tfoot>${footRow}</tfoot>
+    </table></div>`;
+}
+// ---- end F11 ----
+
+// ---- F13 科目餘額走勢 ----
+function runF13() {
+  const accCode = dom.f13AccountSelect?.value;
+  if (!accCode) return toast('請選擇科目', 'WARN');
+  const accInfo = AppState.accounts[accCode];
+  if (!accInfo) return toast('找不到科目資料', 'WARN');
+  const anomalyOnly = dom.f13AnomalyMode?.value === 'anomaly';
+  const keyword = cleanText(dom.keywordInput.value);
+  let rows = AppState.transactions.filter((t) => t.accountCode === accCode);
+  if (keyword) rows = rows.filter((t) => t.summary.includes(keyword) || t.voucherNo.includes(keyword));
+  rows = rows.slice().sort((a, b) => {
+    const dt = a.date - b.date;
+    if (dt !== 0) return dt;
+    return (a.voucherNo || '').localeCompare(b.voucherNo || '');
+  });
+  if (!rows.length) { dom.f13Result.innerHTML = '<p class="muted">此科目無分錄資料（或關鍵字無命中）。</p>'; return; }
+  const opening = accInfo.openingBalance ?? 0;
+  const normalSide = accInfo.normalSide || '';
+  let running = opening;
+  const items = rows.map((t) => {
+    if (normalSide === '貸') running = running + (t.credit || 0) - (t.debit || 0);
+    else running = running + (t.debit || 0) - (t.credit || 0);
+    const bookBal = t.balance || 0;
+    const balOk = Math.abs(running - bookBal) < 0.02;
+    const isAnomaly = !balOk || (normalSide === '借' && bookBal < 0) || (normalSide === '貸' && bookBal > 0);
+    return { t, runningBal: running, bookBal, balOk, isAnomaly };
+  });
+  const display = anomalyOnly ? items.filter((x) => x.isAnomaly) : items;
+  const anomalyCount = items.filter((x) => x.isAnomaly).length;
+  if (!display.length) {
+    dom.f13Result.innerHTML = `<p class="ok" style="font-weight:600;">✓ ${rows.length} 筆分錄，無餘額異常。期末餘額 ${fmtAmount(running)}。</p>`;
+    return;
+  }
+  dom.f13Result.innerHTML = `
+    <p class="muted">[${escapeHtml(accCode)}] ${escapeHtml(accInfo.name || '')}（${escapeHtml(normalSide || '—')}）｜期初 ${fmtAmount(opening)}｜${rows.length} 筆｜期末（計算）${fmtAmount(running)}｜${anomalyCount ? `<span class="danger">${anomalyCount} 筆餘額異常</span>` : '<span class="ok">餘額無異常</span>'}</p>
+    <div class="table-wrap"><table style="min-width:860px;">
+      <thead><tr><th>#</th><th class="col-date">日期</th><th class="col-voucher">傳票</th><th class="col-summary">摘要</th>
+        <th class="col-amount">借方</th><th class="col-amount">貸方</th>
+        <th class="col-amount">計算餘額</th><th class="col-amount">帳上餘額</th><th>核對</th>
+      </tr></thead>
+      <tbody>
+      ${display.map(({ t, runningBal, bookBal, balOk, isAnomaly }, i) => `<tr style="${isAnomaly ? 'background:#fff2f0;' : ''}">
+        <td>${rows.indexOf(t) + 1}</td>
+        <td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td>
+        <td>${escapeHtml((t.summary || '(空白摘要)').slice(0, 40))}</td>
+        <td class="col-amount">${t.debit ? fmtAmount(t.debit) : ''}</td>
+        <td class="col-amount">${t.credit ? fmtAmount(t.credit) : ''}</td>
+        <td class="col-amount" style="font-weight:600;">${fmtAmount(runningBal)}</td>
+        <td class="col-amount">${fmtAmount(bookBal)}</td>
+        <td>${balOk ? '<span class="ok">OK</span>' : `<span class="danger">差 ${fmtSigned(runningBal - bookBal)}</span>`}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+}
+// ---- end F13 ----
+
+// ---- F15 摘要頻率分析 ----
+function runF15() {
+  const rows = getFilteredTransactions();
+  if (!rows.length) return toast('請先上傳分類帳', 'WARN');
+  const sortMode = dom.f15Sort?.value || 'count_asc';
+  const minCount = Math.max(1, Number(dom.f15MinCount?.value || 1) || 1);
+  const maxCount = Number(dom.f15MaxCount?.value || 0) || 0;
+  const freq = new Map();
+  rows.forEach((t) => {
+    const key = cleanText(t.summary) || '(空白摘要)';
+    if (!freq.has(key)) freq.set(key, { summary: key, count: 0, totalDebit: 0, totalCredit: 0, accounts: new Set(), minDate: t.dateROC, maxDate: t.dateROC });
+    const x = freq.get(key);
+    x.count++; x.totalDebit += t.debit || 0; x.totalCredit += t.credit || 0;
+    x.accounts.add(t.accountCode);
+    if (t.dateROC < x.minDate) x.minDate = t.dateROC;
+    if (t.dateROC > x.maxDate) x.maxDate = t.dateROC;
+  });
+  let entries = Array.from(freq.values()).filter((x) => x.count >= minCount && (maxCount <= 0 || x.count <= maxCount));
+  if (sortMode === 'count_asc') entries.sort((a, b) => a.count - b.count || (b.totalDebit + b.totalCredit) - (a.totalDebit + a.totalCredit));
+  else if (sortMode === 'amount_desc') entries.sort((a, b) => (b.totalDebit + b.totalCredit) - (a.totalDebit + a.totalCredit));
+  else entries.sort((a, b) => b.count - a.count || (b.totalDebit + b.totalCredit) - (a.totalDebit + a.totalCredit));
+  const show = entries.slice(0, 500);
+  const singletons = Array.from(freq.values()).filter((x) => x.count === 1).length;
+  dom.f15Result.innerHTML = `
+    <p class="muted">共 ${freq.size} 種不同摘要｜孤筆（出現1次）<strong class="warn">${singletons}</strong> 種｜篩選後 ${entries.length} 種（顯示前 ${show.length}）</p>
+    <div class="table-wrap"><table style="min-width:720px;">
+      <thead><tr><th>#</th><th>摘要</th><th>次數</th><th class="col-amount">借方合計</th><th class="col-amount">貸方合計</th><th>涉及科目</th><th>日期範圍</th></tr></thead>
+      <tbody>
+      ${show.map((x, idx) => {
+        const cStyle = x.count === 1 ? 'color:#d46b08;font-weight:600;' : x.count >= 12 ? 'color:#237804;font-weight:600;' : '';
+        const dateRange = x.minDate === x.maxDate ? x.minDate : `${x.minDate}～${x.maxDate}`;
+        return `<tr>
+          <td>${idx + 1}</td>
+          <td>${escapeHtml(x.summary)}</td>
+          <td style="${cStyle}">${x.count}${x.count === 1 ? ' ⚠' : ''}</td>
+          <td class="col-amount">${x.totalDebit ? fmtAmount(x.totalDebit) : '—'}</td>
+          <td class="col-amount">${x.totalCredit ? fmtAmount(x.totalCredit) : '—'}</td>
+          <td style="font-size:12px;">${Array.from(x.accounts).map(escapeHtml).join('、')}</td>
+          <td style="font-size:12px;white-space:nowrap;">${escapeHtml(dateRange)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table></div>`;
+}
+// ---- end F15 ----
+
 function downloadCsv(name, headers, rows) {
   const data = [headers.join(',')].concat(rows.map((r) => r.map(csvEscape).join(','))).join('\n');
   const blob = new Blob(['\ufeff' + data], { type: 'text/csv;charset=utf-8' });
@@ -1384,6 +1932,34 @@ function debounce(fn, wait = 180) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => fn(...args), wait);
   };
+}
+
+function copyText(text, label = '已複製') {
+  if (!text || !text.trim()) { toast('沒有可複製的內容', 'WARN'); return; }
+  navigator.clipboard.writeText(text).then(
+    () => toast(label),
+    () => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);display:flex;flex-direction:column;gap:10px;box-shadow:0 8px 32px rgba(0,0,0,.25);';
+      box.innerHTML = '<strong style="font-size:15px;">複製文字（file:// 限制，請手動複製）</strong><p style="font-size:13px;color:#5f7692;margin:0;">請按 Ctrl+A 全選後再按 Ctrl+C 複製：</p>';
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'width:100%;height:200px;font:13px/1.5 monospace;resize:vertical;border:1px solid #d6dee8;border-radius:8px;padding:8px;';
+      ta.readOnly = true;
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = '關閉';
+      closeBtn.style.cssText = 'align-self:flex-end;padding:7px 20px;border:1px solid #d6dee8;border-radius:8px;background:#fff;cursor:pointer;';
+      closeBtn.onclick = () => overlay.remove();
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+      box.append(ta, closeBtn);
+      overlay.append(box);
+      document.body.append(overlay);
+      setTimeout(() => { ta.focus(); ta.select(); }, 50);
+      toast('瀏覽器限制，請在彈出框手動複製', 'WARN');
+    }
+  );
 }
 
 function bindEvents() {
@@ -1422,19 +1998,55 @@ function bindEvents() {
   dom.runF2Btn.addEventListener('click', runF2);
   dom.runF3Btn.addEventListener('click', runF3);
   dom.runF4Btn.addEventListener('click', runF4);
+  dom.f4Result.addEventListener('click', (e) => {
+    const reviewKey = e.target?.dataset?.f4Review;
+    if (!reviewKey) return;
+    if (AppState.anomaly.reviewed.has(reviewKey)) AppState.anomaly.reviewed.delete(reviewKey);
+    else AppState.anomaly.reviewed.add(reviewKey);
+    // Re-render without re-running scan
+    const rows = getFilteredTransactions();
+    const txMap = new Map(rows.map((t) => [t.id, t]));
+    const groupMap = new Map();
+    AppState.anomaly.results.forEach((r) => {
+      const k = `${r.rule}||${r.severity}||${r.description}`;
+      if (!groupMap.has(k)) groupMap.set(k, { rule: r.rule, severity: r.severity, description: r.description, ids: [] });
+      groupMap.get(k).ids.push(...r.transactionIds);
+    });
+    const cards = Array.from(groupMap.values()).map((g, idx) => {
+      const ids = Array.from(new Set(g.ids));
+      const list = ids.map((id) => txMap.get(id)).filter(Boolean);
+      const rKey = `${g.rule}||${g.description}`;
+      const isReviewed = AppState.anomaly.reviewed.has(rKey);
+      const cardStyle = isReviewed ? 'margin:8px 0;opacity:0.5;' : 'margin:8px 0;';
+      return `<details class="card" style="${cardStyle}" ${isReviewed ? '' : 'open'}><summary><strong>${idx + 1}. [${g.rule}] ${escapeHtml(g.description)}</strong>｜${g.severity}｜${list.length} 筆 <button data-f4-review="${escapeHtml(rKey)}" style="margin-left:12px;font-size:12px;">${isReviewed ? '取消已審閱' : '✓ 標記已審閱'}</button></summary>
+        <div class="table-wrap"><table><thead><tr><th>傳票號碼</th><th>日期</th><th>科目</th><th>摘要</th><th class="col-amount">簽帳金額</th><th class="col-amount">餘額</th></tr></thead><tbody>
+        ${list.map((t) => `<tr><td>${escapeHtml(t.voucherNo || '')}</td><td>${escapeHtml(t.dateROC)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}
+        </tbody></table></div>
+      </details>`;
+    }).join('');
+    const reviewedCount = Array.from(groupMap.keys()).filter((k2) => AppState.anomaly.reviewed.has(k2)).length;
+    dom.f4Result.innerHTML = `<p class="muted">異常分組 ${groupMap.size} 組${reviewedCount ? `｜已審閱 ${reviewedCount} 組` : ''}</p>${cards}`;
+  });
+  dom.clearF4ReviewedBtn?.addEventListener('click', () => {
+    AppState.anomaly.reviewed.clear();
+    if (AppState.anomaly.results.length) runF4();
+    toast('已清除全部已審閱標記');
+  });
   dom.runF5Btn.addEventListener('click', runF5);
   dom.runF6Btn.addEventListener('click', runF6);
   dom.runF14Btn.addEventListener('click', runF14);
   dom.runF18Btn.addEventListener('click', runF18);
-  dom.copyF18TextBtn.addEventListener('click', async () => {
-    const text = AppState.trendAlert.copyText || '';
-    if (!text.trim()) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('F18 分組摘要已複製');
-    } catch {
-      toast('無法存取剪貼簿，請手動複製', 'WARN');
-    }
+  dom.copyF18TextBtn.addEventListener('click', () => copyText(AppState.trendAlert.copyText || '', 'F18 分組摘要已複製'));
+
+  // F18 copy monthly table as tab-separated
+  dom.f18Result?.addEventListener('click', (e) => {
+    if (!e.target?.dataset?.f18CopyTable) return;
+    const keyword = e.target.dataset.f18CopyTable;
+    const hit = AppState.trendAlert.results.find((r) => r.keyword === keyword);
+    if (!hit?.monthlyData?.length) return toast('無月份資料', 'WARN');
+    const header = '月份\t金額\t前月金額\t變動率(%)';
+    const rows = hit.monthlyData.map((m) => `${m.period}\t${m.amount}\t${m.prevAmount ?? ''}\t${m.changeRate != null ? m.changeRate.toFixed(2) : ''}`);
+    copyText([header, ...rows].join('\n'), '月份趨勢表已複製（可貼入 Excel）');
   });
 
   dom.f18Result.addEventListener('input', (e) => {
@@ -1564,17 +2176,10 @@ function bindEvents() {
     });
   });
 
-  dom.f3Result.addEventListener('click', async (e) => {
+  dom.f3Result.addEventListener('click', (e) => {
     const copy = e.target?.dataset?.f3Copy;
     if (copy) {
-      const text = AppState.pool.copyText || '';
-      if (!text.trim()) return;
-      try {
-        await navigator.clipboard.writeText(text);
-        toast('F3 分組摘要已複製');
-      } catch {
-        toast('無法存取剪貼簿，請手動複製', 'WARN');
-      }
+      copyText(AppState.pool.copyText || '', 'F3 分組摘要已複製');
       return;
     }
     const jump = e.target?.dataset?.f3Jump;
@@ -1700,6 +2305,35 @@ function bindEvents() {
     if (view) {
       AppState.offset.unmatchedView = view === 'group' ? 'group' : 'review';
       renderF2UnmatchedEditor(getF2UnmatchedRowsFromState());
+      return;
+    }
+
+    const apply = e.target?.dataset?.f2Apply;
+    if (apply) {
+      const [debitCsv, creditCsv] = String(apply).split('|');
+      const debitIds = (debitCsv || '').split(',').map((x) => cleanText(x)).filter(Boolean);
+      const creditIds = (creditCsv || '').split(',').map((x) => cleanText(x)).filter(Boolean);
+      if (!debitIds.length || !creditIds.length) return;
+      const all = getFilteredTransactions();
+      const txMap2 = new Map(all.map((t) => [t.id, t]));
+      const debitTotal = sumByIds(txMap2, debitIds, 'debit');
+      const creditTotal = sumByIds(txMap2, creditIds, 'credit');
+      const tol2 = Number(dom.f2Tolerance.value || 0.01);
+      if (!AppState.offset.manualMatches) AppState.offset.manualMatches = [];
+      const alreadyExists = AppState.offset.manualMatches.some((m) => {
+        return (m.debitIds || []).slice().sort().join(',') === debitIds.slice().sort().join(',') &&
+               (m.creditIds || []).slice().sort().join(',') === creditIds.slice().sort().join(',');
+      });
+      if (alreadyExists) { toast('此沖帳組合已存在', 'WARN'); return; }
+      AppState.offset.manualMatches.push({
+        id: `m${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        debitIds, creditIds, createdAt: Date.now(),
+        reason: { kind: `${debitIds.length}↔${creditIds.length}`, delta: debitTotal - creditTotal, simPct: bestSummarySimilarityPct(txMap2, debitIds, creditIds), voucherMatch: false, dayDiff: null },
+      });
+      const usedIds = new Set(debitIds.concat(creditIds));
+      AppState.offset.forcedUnmatchedIds = AppState.offset.forcedUnmatchedIds.filter((x) => !usedIds.has(x));
+      runF2();
+      toast(`已套用建議沖帳（借${debitIds.length}筆／貸${creditIds.length}筆）`);
       return;
     }
 
@@ -1834,21 +2468,21 @@ function bindEvents() {
 
   dom.f2UnmatchedSummary.addEventListener('change', (e) => {
     const th = e.target?.dataset?.f2SuggestTh;
-    if (th) {
+    if (th !== undefined) {
       const n = Number(e.target.value);
-      AppState.offset.suggestThreshold = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 80;
+      if (Number.isFinite(n) && n >= 0 && n <= 100) { AppState.offset.suggestThreshold = n; persistOffsetSetting('f2_suggestThreshold', n); }
       return;
     }
     const win = e.target?.dataset?.f2Win;
-    if (win) {
+    if (win !== undefined) {
       const n = Number(e.target.value);
-      AppState.offset.timeWindowDays = Number.isFinite(n) ? Math.max(0, Math.min(365, n)) : 14;
+      if (Number.isFinite(n) && n >= 0) { AppState.offset.timeWindowDays = n; persistOffsetSetting('f2_timeWindowDays', n); }
       return;
     }
     const km = e.target?.dataset?.f2Kmax;
-    if (km) {
+    if (km !== undefined) {
       const n = Number(e.target.value);
-      AppState.offset.subsetMaxK = Number.isFinite(n) ? Math.max(2, Math.min(8, n)) : 4;
+      if (Number.isFinite(n) && n >= 2) { AppState.offset.subsetMaxK = n; persistOffsetSetting('f2_subsetMaxK', n); }
     }
 
     const allGroupId = e.target?.dataset?.f2CheckAll;
@@ -1940,16 +2574,7 @@ function bindEvents() {
     runF2();
   });
 
-  dom.copyF2TextBtn.addEventListener('click', async () => {
-    const text = AppState.offset.copyText || '';
-    if (!text.trim()) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('F2 未沖帳整理已複製');
-    } catch {
-      toast('無法存取剪貼簿，請手動複製', 'WARN');
-    }
-  });
+  dom.copyF2TextBtn.addEventListener('click', () => copyText(AppState.offset.copyText || '', 'F2 未沖帳整理已複製'));
 
   dom.f1Result.addEventListener('input', (e) => {
     const draftFrom = e.target?.dataset?.f1DraftName;
@@ -2107,14 +2732,6 @@ function bindEvents() {
     }
   });
 
-  // Draft rename persistence: 當你在「預覽分組名稱」直接改名字，任何重繪都要保留。
-  dom.f1Result.addEventListener('input', (e) => {
-    const from = e.target?.dataset?.f1DraftName;
-    if (!from) return;
-    const to = cleanText(e.target.value) || from || '其他';
-    AppState.grouping.draftRenameMap[from] = to;
-  });
-
   dom.f1Result.addEventListener('change', (e) => {
     const allGroupId = e.target?.dataset?.f1CheckAll;
     if (allGroupId) {
@@ -2160,6 +2777,28 @@ function bindEvents() {
     if (!target) return;
     target.open = true;
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  dom.mergeF1Btn?.addEventListener('click', () => {
+    if (!AppState.grouping.groups.length) return toast('請先套用分組', 'WARN');
+    syncF1AppliedEditsFromUI();
+    const merged = new Map();
+    const order = [];
+    AppState.grouping.groups.forEach((g) => {
+      const name = cleanText(g.name) || '其他';
+      if (!merged.has(name)) { merged.set(name, { ...g, transactionIds: [] }); order.push(name); }
+      g.transactionIds.forEach((id) => { if (!merged.get(name).transactionIds.includes(id)) merged.get(name).transactionIds.push(id); });
+    });
+    AppState.grouping.groups = order.map((name) => merged.get(name));
+    renderF1Output();
+    toast(`合併完成，現有 ${AppState.grouping.groups.length} 個群組`);
+  });
+  dom.sortF1Btn?.addEventListener('click', () => {
+    if (!AppState.grouping.groups.length) return toast('請先套用分組', 'WARN');
+    syncF1AppliedEditsFromUI();
+    AppState.grouping.groups.sort((a, b) => cleanText(a.name).localeCompare(cleanText(b.name), 'zh-TW'));
+    renderF1Output();
+    toast('已依名稱排序');
   });
 
   dom.f1AddGroupBtn.addEventListener('click', () => {
@@ -2217,16 +2856,7 @@ function bindEvents() {
     toast(`已新增 ${added} 個分組`);
   });
 
-  dom.copyF1TextBtn.addEventListener('click', async () => {
-    const text = AppState.grouping.copyText || '';
-    if (!text.trim()) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('F1 分組摘要已複製');
-    } catch {
-      toast('無法存取剪貼簿，請手動複製', 'WARN');
-    }
-  });
+  dom.copyF1TextBtn.addEventListener('click', () => copyText(AppState.grouping.copyText || '', 'F1 分組摘要已複製'));
 
   dom.todoToggleBtn.addEventListener('click', () => {
     dom.todoPanel.classList.toggle('collapsed');
@@ -2235,14 +2865,36 @@ function bindEvents() {
 
   const autoF2 = debounce(() => { if (AppState.transactions.length) runF2(); });
   const autoF3 = debounce(() => { if (AppState.transactions.length) runF3(); }, 260);
-  const autoF5 = debounce(() => { if (AppState.transactions.length) runF5(); });
+  const autoF5 = debounce(() => {
+    if (!AppState.transactions.length) return;
+    const mode = dom.f5Mode.value;
+    const query = cleanText(dom.f5Query.value);
+    if ((mode === 'keyword' || mode === 'combo') && query.length < 2) return; // 靜默略過，避免打字中途彈 toast
+    runF5();
+  });
   const autoF6 = debounce(() => { if (AppState.transactions.length) runF6(); });
-  const autoF18 = debounce(() => { if (AppState.transactions.length) runF18(); });
+  const autoF18 = debounce(() => {
+    if (!AppState.transactions.length) return;
+    if (!splitGroupNames(dom.f18Keyword.value).length) return; // 靜默略過空關鍵字
+    runF18();
+  });
 
-  dom.f2Tolerance.addEventListener('input', autoF2);
+  dom.f2Tolerance.addEventListener('input', (e) => {
+    persistOffsetSetting('f2_tolerance', e.target.value);
+    autoF2();
+  });
   dom.f3Direction.addEventListener('change', autoF3);
   dom.f3Target.addEventListener('input', autoF3);
   dom.f3Tolerance.addEventListener('input', autoF3);
+  dom.f3MinAmt?.addEventListener('input', () => { if (AppState.transactions.length) renderF3CandidateList(getFilteredTransactions()); });
+  dom.f3MaxAmt?.addEventListener('input', () => { if (AppState.transactions.length) renderF3CandidateList(getFilteredTransactions()); });
+  dom.f3List.addEventListener('click', (e) => {
+    const amt = e.target?.dataset?.f3SetTarget;
+    if (amt == null) return;
+    dom.f3Target.value = amt;
+    toast(`目標金額已設為 ${fmtAmount(Number(amt))}`);
+    if (AppState.transactions.length) runF3();
+  });
   dom.f5Mode.addEventListener('change', autoF5);
   dom.f5Query.addEventListener('input', autoF5);
   dom.f5Amount.addEventListener('input', autoF5);
@@ -2266,7 +2918,15 @@ function bindEvents() {
   });
 
   dom.exportF2Btn.addEventListener('click', () => {
-    const rows = AppState.offset.pairs.map((p) => [p.debit.summary, p.debitTotal, p.credit.summary, p.creditTotal, p.confidence]);
+    const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+    const rows = AppState.offset.pairs.map((p) => {
+      // autoPairs shape: { debit: txn, credit: txn, ... }
+      if (p?.debit?.id) return [p.debit.summary || '', p.debitTotal, p.credit?.summary || '', p.creditTotal, p.confidence];
+      // manualPairs / manualMatches shape: { debitIds: [], creditIds: [], ... }
+      const dText = (p.debitIds || []).map((id) => txMap.get(id)?.summary).filter(Boolean).join(' / ') || '(借方)';
+      const cText = (p.creditIds || []).map((id) => txMap.get(id)?.summary).filter(Boolean).join(' / ') || '(貸方)';
+      return [dText, p.debitTotal, cText, p.creditTotal, p.confidence];
+    });
     downloadCsv(`F2_${Date.now()}.csv`, ['借方摘要', '借方金額', '貸方摘要', '貸方金額', '信心度'], rows);
   });
 
@@ -2289,6 +2949,119 @@ function bindEvents() {
       (hit.monthlyData || []).forEach((m) => rows.push([hit.keyword, m.period, m.amount, m.prevAmount == null ? '' : m.prevAmount, m.prevAmount == null ? '' : (m.amount - m.prevAmount), m.changeRate == null ? '—' : m.changeRate.toFixed(2), m.flagged ? 'Y' : 'N', m.txnIds.length]));
     });
     downloadCsv(`F18_${Date.now()}.csv`, ['關鍵字', '月份', '金額', '前月金額', '變動金額', '變動率(%)', '是否超出門檻', '涉及傳票數'], rows);
+  });
+
+  dom.runF7Btn.addEventListener('click', renderTrialBalance);
+
+  dom.exportF7Btn.addEventListener('click', () => {
+    if (!AppState.transactions.length) return toast('請先上傳分類帳', 'WARN');
+    const { rows, grandDebit, grandCredit, balanced } = computeTrialBalance();
+    const csvRows = rows.map((r) => [r.code, r.name, r.normalSide, r.txnCount, r.opening, r.totalDebit, r.totalCredit, r.closing, r.lastBal ?? '', r.balOk ? 'OK' : '不一致']);
+    csvRows.push(['合計', '', '', '', '', grandDebit, grandCredit, '', '', balanced ? '借貸平衡' : '借貸不平衡']);
+    downloadCsv(`F7_試算表_${Date.now()}.csv`, ['科目代碼', '科目名稱', '借貸', '筆數', '期初餘額', '本期借方', '本期貸方', '期末餘額(計算)', '帳上末筆餘額', '核對'], csvRows);
+  });
+
+  dom.exportF3Btn.addEventListener('click', () => {
+    const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+    const rows = [];
+    AppState.pool.groups.forEach((g) => {
+      const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
+      txns.forEach((t) => rows.push([g.name, t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit]));
+    });
+    AppState.pool.ungrouped.forEach((id) => { const t = txMap.get(id); if (t) rows.push(['(未分組)', t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit]); });
+    if (!rows.length) return toast('尚無數字池結果', 'WARN');
+    downloadCsv(`F3_${Date.now()}.csv`, ['組名', '傳票號碼', '日期', '科目代碼', '科目名稱', '摘要', '借方金額', '貸方金額'], rows);
+  });
+
+  dom.exportF5Btn.addEventListener('click', () => {
+    const results = AppState.crossLink.results;
+    if (!results.length) return toast('尚無跨科目連結結果', 'WARN');
+    const csvRows = results.map((t) => [t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit, t.balance]);
+    downloadCsv(`F5_${Date.now()}.csv`, ['傳票號碼', '日期', '科目代碼', '科目名稱', '摘要', '借方金額', '貸方金額', '餘額'], csvRows);
+  });
+
+  dom.exportF6Btn.addEventListener('click', () => {
+    const results = AppState.gap.results;
+    if (!results.length) return toast('尚無時間斷層結果', 'WARN');
+    const csvRows = results.map((r) => [r.period, r.expected, r.actual, r.status === 'ok' ? 'OK' : r.status === 'missing' ? 'MISSING' : 'EXCESS']);
+    downloadCsv(`F6_${Date.now()}.csv`, ['期間', '預期次數', '實際次數', '狀態'], csvRows);
+  });
+
+  // ---- Period filter ----
+  const autoRebase = debounce(() => { if (AppState.transactions.length) renderBase(); }, 300);
+  dom.periodFrom.addEventListener('input', autoRebase);
+  dom.periodTo.addEventListener('input', autoRebase);
+
+  // ---- F9 event handlers ----
+  dom.f9AccountSelect.addEventListener('change', renderF9Memo);
+
+  dom.f9SaveMemoBtn.addEventListener('click', () => {
+    const code = dom.f9AccountSelect.value || '';
+    const text = cleanText(dom.f9Memo.value);
+    if (text) AppState.memo.notes[code] = text;
+    else delete AppState.memo.notes[code];
+    saveMemoStorage();
+    if (dom.f9MemoStatus) dom.f9MemoStatus.textContent = `已儲存（${new Date().toLocaleTimeString('zh-TW')}）`;
+    toast('備忘已儲存');
+  });
+
+  dom.f9AddRuleBtn.addEventListener('click', () => {
+    const keyword = cleanText(dom.f9RuleKeyword.value);
+    if (!keyword) return toast('請輸入摘要關鍵字', 'WARN');
+    const rule = {
+      id: `r${Date.now()}`,
+      accountCode: dom.f9RuleAccount.value || '',
+      keyword,
+      frequency: dom.f9RuleFreq.value,
+      expectedAmount: Number(dom.f9RuleAmount.value) || 0,
+    };
+    AppState.memo.rules.push(rule);
+    saveMemoStorage();
+    dom.f9RuleKeyword.value = ''; dom.f9RuleAmount.value = '';
+    renderF9Rules();
+    toast('規則已新增');
+  });
+
+  dom.f9ClearRulesBtn.addEventListener('click', () => {
+    if (!AppState.memo.rules.length) return;
+    AppState.memo.rules = [];
+    saveMemoStorage();
+    renderF9Rules();
+    dom.f9Result.innerHTML = '';
+    toast('已清除全部規則');
+  });
+
+  dom.f9RuleList.addEventListener('click', (e) => {
+    const idxStr = e.target?.dataset?.f9DelRule;
+    if (idxStr == null) return;
+    AppState.memo.rules.splice(Number(idxStr), 1);
+    saveMemoStorage();
+    renderF9Rules();
+  });
+
+  dom.runF9Btn.addEventListener('click', () => {
+    if (!AppState.transactions.length) return toast('請先上傳分類帳', 'WARN');
+    if (!AppState.memo.rules.length) return toast('請先新增期望分錄規則', 'WARN');
+    const results = runF9Missing();
+    renderF9Result(results);
+    renderF9Rules();
+  });
+
+  dom.copyF9RequestBtn.addEventListener('click', () => copyText(buildF9RequestText(), '索取清單已複製'));
+
+  dom.exportF9Btn.addEventListener('click', () => {
+    const results = AppState.memo.missingResults || [];
+    if (!results.length) return toast('請先掃描缺少分錄', 'WARN');
+    const csvRows = [];
+    results.forEach((r) => {
+      const accLabel = r.rule.accountCode || '全科目';
+      if (r.missing.length) {
+        r.missing.forEach((p) => csvRows.push([accLabel, r.accName, r.rule.keyword, r.rule.frequency, p, '缺少', r.rule.expectedAmount || '']));
+      } else {
+        csvRows.push([accLabel, r.accName, r.rule.keyword, r.rule.frequency, '', r.rule.frequency === 'any' && !r.found ? '找不到分錄' : 'OK', r.rule.expectedAmount || '']);
+      }
+    });
+    downloadCsv(`F9_索取清單_${Date.now()}.csv`, ['科目代碼', '科目名稱', '關鍵字', '頻率', '缺少期間', '狀態', '預期金額'], csvRows);
   });
 
   dom.addTodoBtn.addEventListener('click', () => {
@@ -2320,21 +3093,27 @@ function bindEvents() {
       renderTodos();
     }
   });
-  dom.copyTodoAllBtn.addEventListener('click', async () => {
-    const text = AppState.todos.map((t) => `${t.voucherNo} ${t.content}`).join('\n');
-    if (!text.trim()) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('待辦已全部複製');
-    } catch {
-      toast('無法存取剪貼簿，請手動複製', 'WARN');
-    }
+  dom.copyTodoAllBtn.addEventListener('click', () => {
+    copyText(AppState.todos.map((t) => `${t.voucherNo} ${t.content}`).join('\n'), '待辦已全部複製');
   });
+
+  // ---- F10 / F11 / F13 / F15 ----
+  dom.runF10Btn?.addEventListener('click', runF10);
+  dom.runF11Btn?.addEventListener('click', runF11);
+  dom.f11Field?.addEventListener('change', () => { if (AppState.transactions.length && dom.f11Result?.innerHTML.trim()) runF11(); });
+  dom.runF13Btn?.addEventListener('click', runF13);
+  dom.f13AccountSelect?.addEventListener('change', () => { if (dom.f13Result) dom.f13Result.innerHTML = ''; });
+  dom.f13AnomalyMode?.addEventListener('change', () => { if (AppState.transactions.length && dom.f13Result?.innerHTML.trim()) runF13(); });
+  dom.runF15Btn?.addEventListener('click', runF15);
+  dom.f15Sort?.addEventListener('change', () => { if (AppState.transactions.length && dom.f15Result?.innerHTML.trim()) runF15(); });
 }
 
 function init() {
+  loadUserSettings();
+  loadMemoStorage();
   bindEvents();
   renderTodos();
+  renderF9Rules();
   toast(`LibDetector: Fuse ${hasFuse ? 'OK' : 'fallback'} / Decimal ${hasDecimal ? 'OK' : 'missing'}`);
 }
 

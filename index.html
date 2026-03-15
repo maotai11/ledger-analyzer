@@ -274,8 +274,14 @@
         <button data-module="f4">F4 異常偵測</button>
         <button data-module="f5">F5 跨科目連結</button>
         <button data-module="f6">F6 時間斷層</button>
+        <button data-module="f7">F7 試算表</button>
+        <button data-module="f9">F9 備忘 & 索取清單</button>
         <button data-module="f14">F14 重複傳票</button>
         <button data-module="f18">F18 金額變動</button>
+        <button data-module="f10">F10 傳票借貸平衡</button>
+        <button data-module="f11">F11 科目月份矩陣</button>
+        <button data-module="f13">F13 餘額走勢</button>
+        <button data-module="f15">F15 摘要頻率</button>
       </aside>
 
       <main class="content">
@@ -287,12 +293,19 @@
             <label>關鍵字搜尋
               <input id="keywordInput" type="text" placeholder="摘要或傳票號碼" />
             </label>
+            <label>起始期間（民國 yyyy-mm）
+              <input id="periodFrom" type="text" placeholder="114-01" style="width:100%;" />
+            </label>
+            <label>結束期間（民國 yyyy-mm）
+              <input id="periodTo" type="text" placeholder="114-12" style="width:100%;" />
+            </label>
           </div>
           <div id="stats" class="muted" style="margin-top:8px;"></div>
         </section>
 
         <section class="card module active" id="module-overview">
           <h3>解析後明細</h3>
+          <div id="overviewSummary" style="margin-bottom:12px;"></div>
           <div id="overviewList"></div>
         </section>
 
@@ -305,6 +318,8 @@
             <button id="f1AddGroupBtn">新增分組</button>
             <button id="exportF1Btn">匯出 CSV</button>
             <button id="copyF1TextBtn">複製分組摘要</button>
+            <button id="mergeF1Btn">合併同名群組</button>
+            <button id="sortF1Btn">依名稱排序</button>
           </div>
           <div id="f1CopyOutput" class="muted" style="margin-top:8px;"></div>
           <div id="f1Result" style="margin-top:10px;"></div>
@@ -341,15 +356,22 @@
                 <option value="credit">貸方</option>
               </select>
             </label>
-            <label>目標金額
+            <label>目標金額<small class="muted">（點候選金額可自動填入）</small>
               <input id="f3Target" type="number" step="0.01" />
             </label>
             <label>容差
               <input id="f3Tolerance" type="number" step="0.01" value="0.01" />
             </label>
+            <label>金額下限（篩選候選）
+              <input id="f3MinAmt" type="number" step="0.01" min="0" placeholder="0" />
+            </label>
+            <label>金額上限（篩選候選）
+              <input id="f3MaxAmt" type="number" step="0.01" min="0" placeholder="不限" />
+            </label>
           </div>
           <div class="toolbar">
             <button id="runF3Btn" class="primary">計算</button>
+            <button id="exportF3Btn">匯出 CSV</button>
           </div>
           <div id="f3Result" style="margin-top:10px;"></div>
           <div class="list-title">目前候選清單</div>
@@ -361,6 +383,7 @@
           <div class="toolbar">
             <button id="runF4Btn" class="primary">掃描異常</button>
             <button id="exportF4Btn">匯出 CSV</button>
+            <button id="clearF4ReviewedBtn">清除已審閱標記</button>
           </div>
           <div id="f4Result" style="margin-top:10px;"></div>
           <div class="list-title">未命中異常清單</div>
@@ -390,6 +413,7 @@
           </div>
           <div class="toolbar">
             <button id="runF5Btn" class="primary">執行搜尋</button>
+            <button id="exportF5Btn">匯出 CSV</button>
           </div>
           <div id="f5Result" style="margin-top:10px;"></div>
           <div class="list-title">剩餘清單</div>
@@ -423,10 +447,79 @@
           </div>
           <div class="toolbar">
             <button id="runF6Btn" class="primary">檢查</button>
+            <button id="exportF6Btn">匯出 CSV</button>
           </div>
           <div id="f6Result" style="margin-top:10px;"></div>
           <div class="list-title">符合頻率清單</div>
           <div id="f6List"></div>
+        </section>
+
+        <section class="card module" id="module-f7">
+          <h3>F7 試算表（Trial Balance）</h3>
+          <p class="muted" style="margin-top:0;">匯總各科目期初餘額、本期借貸發生額及期末餘額，並驗算借貸是否平衡。</p>
+          <div class="toolbar">
+            <button id="runF7Btn" class="primary">產生試算表</button>
+            <button id="exportF7Btn">匯出 CSV</button>
+          </div>
+          <div id="f7Result" style="margin-top:10px;"></div>
+        </section>
+
+        <section class="card module" id="module-f9">
+          <h3>F9 科目備忘 & 索取清單</h3>
+          <p class="muted" style="margin-top:0;">針對各科目書寫備忘、設定期望分錄規則，掃描缺少的費用帳，並輸出索取清單給客戶。</p>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
+            <div class="card">
+              <strong>科目備忘錄</strong>
+              <label style="margin-top:8px;">選擇科目
+                <select id="f9AccountSelect"></select>
+              </label>
+              <label style="margin-top:8px;">備忘內容
+                <textarea id="f9Memo" rows="5" placeholder="例：每月租金約 50,000，通常月底入帳；注意是否有年終獎金沖銷…" style="resize:vertical;width:100%;"></textarea>
+              </label>
+              <div class="toolbar">
+                <button id="f9SaveMemoBtn" class="primary">儲存備忘</button>
+              </div>
+              <div id="f9MemoStatus" class="muted" style="margin-top:4px;font-size:12px;"></div>
+            </div>
+            <div class="card">
+              <strong>新增期望分錄規則</strong>
+              <div class="grid" style="margin-top:8px;">
+                <label>科目（空白 = 全科目）
+                  <select id="f9RuleAccount"></select>
+                </label>
+                <label>摘要關鍵字
+                  <input id="f9RuleKeyword" type="text" placeholder="例：租金" />
+                </label>
+                <label>期望頻率
+                  <select id="f9RuleFreq">
+                    <option value="monthly">每月一筆</option>
+                    <option value="yearly">每年一筆</option>
+                    <option value="any">只查有無（不驗頻率）</option>
+                  </select>
+                </label>
+                <label>預期金額（可空）
+                  <input id="f9RuleAmount" type="number" step="0.01" min="0" placeholder="略" />
+                </label>
+              </div>
+              <div class="toolbar">
+                <button id="f9AddRuleBtn" class="primary">新增規則</button>
+                <button id="f9ClearRulesBtn">清除全部</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:10px;">
+            <strong>規則清單</strong>
+            <div id="f9RuleList" style="margin-top:8px;"><p class="muted">尚無規則。</p></div>
+          </div>
+
+          <div class="toolbar" style="margin-top:10px;">
+            <button id="runF9Btn" class="primary">掃描缺少分錄</button>
+            <button id="copyF9RequestBtn">複製索取清單</button>
+            <button id="exportF9Btn">匯出 CSV</button>
+          </div>
+          <div id="f9Result" style="margin-top:10px;"></div>
         </section>
 
         <section class="card module" id="module-f14">
@@ -458,6 +551,83 @@
           <div id="f18Result" style="margin-top:10px;"></div>
           <div class="list-title">涉及分錄清單</div>
           <div id="f18List"></div>
+        </section>
+
+        <section class="card module" id="module-f10">
+          <h3>F10 傳票借貸平衡驗證</h3>
+          <p class="muted" style="margin-top:0;">依傳票號碼彙整跨科目借貸總額，驗算是否借方 = 貸方。借貸不等代表分錄遺漏或重複，需優先釐清。</p>
+          <div class="grid">
+            <label>容差
+              <input id="f10Tolerance" type="number" step="0.01" min="0" value="0.02" style="width:100px;" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF10Btn" class="primary">驗算傳票平衡</button>
+          </div>
+          <div id="f10Result" style="margin-top:10px;"></div>
+        </section>
+
+        <section class="card module" id="module-f11">
+          <h3>F11 科目月份矩陣</h3>
+          <p class="muted" style="margin-top:0;">各科目 × 各月份彙總，快速識別異常月份、缺失期間及金額異動。</p>
+          <div class="grid">
+            <label>顯示欄位
+              <select id="f11Field">
+                <option value="net">淨額（依借/貸方向）</option>
+                <option value="debit">借方合計</option>
+                <option value="credit">貸方合計</option>
+                <option value="count">筆數</option>
+              </select>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF11Btn" class="primary">產生矩陣</button>
+          </div>
+          <div id="f11Result" style="margin-top:10px;overflow-x:auto;"></div>
+        </section>
+
+        <section class="card module" id="module-f13">
+          <h3>F13 科目餘額走勢</h3>
+          <p class="muted" style="margin-top:0;">逐筆追蹤選定科目的計算餘額與帳上餘額，快速定位第一筆餘額跳掉的分錄。</p>
+          <div class="grid">
+            <label>科目
+              <select id="f13AccountSelect"></select>
+            </label>
+            <label>顯示模式
+              <select id="f13AnomalyMode">
+                <option value="all">全部顯示</option>
+                <option value="anomaly">僅顯示餘額異常</option>
+              </select>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF13Btn" class="primary">檢視走勢</button>
+          </div>
+          <div id="f13Result" style="margin-top:10px;"></div>
+        </section>
+
+        <section class="card module" id="module-f15">
+          <h3>F15 摘要頻率分析</h3>
+          <p class="muted" style="margin-top:0;">統計各摘要出現頻率，識別孤筆（出現1次，可能誤記）與系統性分錄，輔助核對帳務完整性。</p>
+          <div class="grid">
+            <label>排序
+              <select id="f15Sort">
+                <option value="count_asc">頻率低→高（孤筆優先）</option>
+                <option value="count_desc">頻率高→低</option>
+                <option value="amount_desc">金額大→小</option>
+              </select>
+            </label>
+            <label>最少出現次數
+              <input id="f15MinCount" type="number" min="1" value="1" style="width:80px;" />
+            </label>
+            <label>最多出現次數（0＝不限）
+              <input id="f15MaxCount" type="number" min="0" value="0" style="width:80px;" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF15Btn" class="primary">分析頻率</button>
+          </div>
+          <div id="f15Result" style="margin-top:10px;"></div>
         </section>
       </main>
     </div>

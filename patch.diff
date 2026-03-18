@@ -1,0 +1,96 @@
+﻿*** Begin Patch
+*** Update File: ledger.js
+@@
+ const hasDecimal = typeof Decimal !== 'undefined';
+ let searchEngine = null;
+ let poolWorker = null;
++
++// User settings persistence (localStorage) for F2 parameters
++function loadUserSettings() {
++  try {
++    const sTh = Number(localStorage.getItem('f2_suggestThreshold'));
++    const win = Number(localStorage.getItem('f2_timeWindowDays'));
++    const kmax = Number(localStorage.getItem('f2_subsetMaxK'));
++    const tol = localStorage.getItem('f2_tolerance');
++    if (Number.isFinite(sTh)) AppState.offset.suggestThreshold = Math.max(0, Math.min(100, sTh));
++    if (Number.isFinite(win)) AppState.offset.timeWindowDays = Math.max(0, Math.min(365, win));
++    if (Number.isFinite(kmax)) AppState.offset.subsetMaxK = Math.max(2, Math.min(8, kmax));
++    if (tol != null && dom?.f2Tolerance) dom.f2Tolerance.value = String(tol);
++  } catch { /* ignore */ }
++}
++function persistOffsetSetting(key, value) {
++  try { localStorage.setItem(key, String(value)); } catch { /* ignore */ }
++}
+@@
+ function renderF2UnmatchedEditor(rows) {
+@@
+-  const view = AppState.offset.unmatchedView || 'review';
++  const view = AppState.offset.unmatchedView || 'review';
+@@
+-  const suggestTh = Number(AppState.offset.suggestThreshold ?? 80);
++  const suggestTh = Number(AppState.offset.suggestThreshold ?? 80);
+@@
+-  const winDays = Number(AppState.offset.timeWindowDays ?? 14);
++  const winDays = Number(AppState.offset.timeWindowDays ?? 14);
+@@
+-  const kMax = Number(AppState.offset.subsetMaxK ?? 4);
++  const kMax = Number(AppState.offset.subsetMaxK ?? 4);
+@@
+   dom.f2UnmatchedSummary.innerHTML = `
+@@
+-      <label>建議沖帳相似度門檻(%)
+-        <input data-f2-suggest-th type="number" min="0" max="100" step="1" value="${escapeHtml(String(Number.isFinite(suggestTh) ? suggestTh : 80))}" style="width:110px;" />
+-      </label>
++      <label>建議沖帳相似度門檻(%)
++        <input data-f2-suggest-th type="number" min="0" max="100" step="1" value="${escapeHtml(String(Number.isFinite(suggestTh) ? suggestTh : 80))}" style="width:110px;" />
++      </label>
+       <label>時間窗(天)
+         <input data-f2-win type="number" min="0" max="365" step="1" value="${escapeHtml(String(Number.isFinite(winDays) ? winDays : 14))}" style="width:110px;" />
+       </label>
+       <label>最多筆數(k)
+         <input data-f2-kmax type="number" min="2" max="8" step="1" value="${escapeHtml(String(Number.isFinite(kMax) ? kMax : 4))}" style="width:110px;" />
+       </label>
+       <button data-f2-suggest-refresh="1">更新建議</button>
+     </div>
+@@
+   dom.f2UnmatchedSummary.addEventListener('change', (e) => {
+     const th = e.target?.dataset?.f2SuggestTh;
+     if (th) {
+       const n = Number(e.target.value);
+-      AppState.offset.suggestThreshold = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 80;
++      AppState.offset.suggestThreshold = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 80;
++      persistOffsetSetting('f2_suggestThreshold', AppState.offset.suggestThreshold);
+       return;
+     }
+     const win = e.target?.dataset?.f2Win;
+     if (win) {
+       const n = Number(e.target.value);
+-      AppState.offset.timeWindowDays = Number.isFinite(n) ? Math.max(0, Math.min(365, n)) : 14;
++      AppState.offset.timeWindowDays = Number.isFinite(n) ? Math.max(0, Math.min(365, n)) : 14;
++      persistOffsetSetting('f2_timeWindowDays', AppState.offset.timeWindowDays);
+       return;
+     }
+     const km = e.target?.dataset?.f2Kmax;
+     if (km) {
+       const n = Number(e.target.value);
+-      AppState.offset.subsetMaxK = Number.isFinite(n) ? Math.max(2, Math.min(8, n)) : 4;
++      AppState.offset.subsetMaxK = Number.isFinite(n) ? Math.max(2, Math.min(8, n)) : 4;
++      persistOffsetSetting('f2_subsetMaxK', AppState.offset.subsetMaxK);
+     }
+@@
+ }
+@@
+ function init() {
+-  bindEvents();
++  loadUserSettings();
++  bindEvents();
+   renderTodos();
+   toast(`LibDetector: Fuse ${hasFuse ? 'OK' : 'fallback'} / Decimal ${hasDecimal ? 'OK' : 'missing'}`);
+ }
+@@
+-  dom.f2Tolerance.addEventListener('input', autoF2);
++  dom.f2Tolerance.addEventListener('input', (e) => {
++    persistOffsetSetting('f2_tolerance', e.target.value);
++    autoF2();
++  });
+*** End Patch

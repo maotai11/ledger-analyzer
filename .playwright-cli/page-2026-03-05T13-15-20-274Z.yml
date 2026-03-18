@@ -1,0 +1,49 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]:
+        - heading "離線分類帳分析工具" [level=1] [ref=e5]
+        - generic [ref=e6]: 尚未上傳檔案
+      - generic [ref=e7]:
+        - generic [ref=e8] [cursor=pointer]: 上傳 Excel
+        - button "重新上傳" [ref=e9] [cursor=pointer]
+    - generic [ref=e10]:
+      - complementary [ref=e11]:
+        - button "總覽" [ref=e12] [cursor=pointer]
+        - button "F1 摘要分組" [ref=e13] [cursor=pointer]
+        - button "F2 沖帳" [ref=e14] [cursor=pointer]
+        - button "F3 數字池" [ref=e15] [cursor=pointer]
+        - button "F4 異常偵測" [ref=e16] [cursor=pointer]
+        - button "F5 跨科目連結" [ref=e17] [cursor=pointer]
+        - button "F6 時間斷層" [ref=e18] [cursor=pointer]
+        - button "F14 重複傳票" [ref=e19] [cursor=pointer]
+        - button "F18 金額變動" [ref=e20] [cursor=pointer]
+      - main [ref=e21]:
+        - generic [ref=e23]:
+          - generic [ref=e24]:
+            - text: 科目
+            - combobox "科目" [ref=e25]
+          - generic [ref=e26]:
+            - text: 關鍵字搜尋
+            - textbox "關鍵字搜尋" [ref=e27]:
+              - /placeholder: 摘要或傳票號碼
+        - heading "解析後明細" [level=3] [ref=e29]
+  - generic [ref=e30]:
+    - generic [ref=e31]:
+      - strong [ref=e32]: F8 待辦 0
+      - button "隱藏" [ref=e33] [cursor=pointer]
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - text: 傳票號碼
+          - textbox "傳票號碼" [ref=e37]
+        - generic [ref=e38]:
+          - text: 內容
+          - textbox "內容" [ref=e39]
+      - generic [ref=e40]:
+        - button "新增" [ref=e41] [cursor=pointer]
+        - button "複製全部" [ref=e42] [cursor=pointer]
+      - list
+  - generic [ref=e44]:
+    - strong [ref=e45]: INFO
+    - text: "LibDetector: Fuse OK / Decimal OK"

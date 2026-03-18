@@ -1,0 +1,12 @@
+{
+  "name": "離線分類帳分析工具",
+  "short_name": "帳務分析",
+  "description": "離線分類帳分析：沖帳、異常偵測、試算表",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f0f4fa",
+  "theme_color": "#165dff",
+  "icons": [
+    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23165dff'/><text y='70' x='50' text-anchor='middle' font-size='60' fill='white'>📊</text></svg>", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

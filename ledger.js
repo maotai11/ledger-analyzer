@@ -15,6 +15,10 @@ const hasFuse = typeof Fuse !== 'undefined';
 const hasDecimal = typeof Decimal !== 'undefined';
 let searchEngine = null;
 let poolWorker = null;
+// Overview sort & pagination state
+let _ovSort = { col: 'dateROC', dir: 'asc' };
+let _ovPage = 1;
+const OV_PAGE_SIZE = 150;
 // User settings persistence (localStorage) for F2 parameters
 function loadUserSettings() {
   try {
@@ -361,12 +365,73 @@ function getFilteredTransactions() {
 
 function renderTxnList(el, rows, note = '', opts = {}) {
   const collapsible = opts.collapsible !== false;
-  const show = rows.slice(0, 200);
+  const limit = opts.limit || 250;
+  const show = rows.slice(0, limit);
+  const hasMore = rows.length > limit;
   if (!collapsible) {
-    el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}</p><div class="table-wrap"><table><thead><tr><th>#</th><th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th><th class="col-amount">摘要金額(符號)</th><th class="col-amount">餘額</th></tr></thead><tbody>${show.map((t, idx) => `<tr><td>${idx + 1}</td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}</tbody></table></div>`;
+    el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（僅顯示前 ${limit} 筆，請用篩選縮小範圍）</span>` : ''}</p><div class="table-wrap"><table><thead><tr><th>#</th><th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th><th class="col-amount">金額(符號)</th><th class="col-amount">餘額</th></tr></thead><tbody>${show.map((t, idx) => `<tr><td>${idx + 1}</td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</td><td class="col-summary">${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}</tbody></table></div>`;
     return;
   }
-  el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}</p>${show.map((t, idx) => `<details class="card" style="margin:8px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}｜${escapeHtml((t.summary || '(空白摘要)').slice(0, 50))}｜${fmtSigned(getSignedAmount(t))}</summary><div style="margin-top:8px;"><div><strong>摘要：</strong>${escapeHtml(t.summary || '(空白摘要)')}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>傳票：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>科目：</strong>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>摘要金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div></div></details>`).join('')}`;
+  el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（顯示前 ${limit} 筆）</span>` : ''}</p>${show.map((t, idx) => `<details class="card" style="margin:6px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}｜${escapeHtml((t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}</summary><div style="margin-top:8px;display:grid;gap:4px;"><div><strong>完整摘要：</strong>${escapeHtml(t.summary || '(空白摘要)')}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>傳票：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>科目：</strong>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div></div></details>`).join('')}`;
+}
+
+function _ovSortRows(rows) {
+  const { col, dir } = _ovSort;
+  return rows.slice().sort((a, b) => {
+    let va, vb;
+    if (col === 'amount') { va = getSignedAmount(a); vb = getSignedAmount(b); }
+    else if (col === 'balance') { va = Number(a.balance || 0); vb = Number(b.balance || 0); }
+    else if (col === 'debit') { va = Number(a.debit || 0); vb = Number(b.debit || 0); }
+    else if (col === 'credit') { va = Number(a.credit || 0); vb = Number(b.credit || 0); }
+    else { va = String(a[col] || ''); vb = String(b[col] || ''); }
+    let cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb), 'zh-TW');
+    return dir === 'desc' ? -cmp : cmp;
+  });
+}
+
+function renderOverviewTable(rows) {
+  if (!dom.overviewList) return;
+  const sorted = _ovSortRows(rows);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / OV_PAGE_SIZE));
+  if (_ovPage > totalPages) _ovPage = totalPages;
+  const start = (_ovPage - 1) * OV_PAGE_SIZE;
+  const show = sorted.slice(start, start + OV_PAGE_SIZE);
+
+  const cols = [
+    { key: 'dateROC', label: '日期' },
+    { key: 'voucherNo', label: '傳票' },
+    { key: 'accountCode', label: '科目' },
+    { key: 'summary', label: '摘要' },
+    { key: 'amount', label: '金額(符號)' },
+    { key: 'balance', label: '餘額' },
+  ];
+  const thRow = cols.map((c) => {
+    const isActive = _ovSort.col === c.key;
+    const icon = isActive ? (_ovSort.dir === 'asc' ? '↑' : '↓') : '⇕';
+    const cls = `sortable${isActive ? ` sort-${_ovSort.dir}` : ''}`;
+    return `<th class="${cls}" data-ov-sort="${c.key}">${escapeHtml(c.label)} <span class="sort-icon">${icon}</span></th>`;
+  }).join('');
+
+  const pageNav = totalPages > 1
+    ? `<div class="pagination">
+        <button data-ov-page="prev" ${_ovPage <= 1 ? 'disabled' : ''}>‹ 上頁</button>
+        <span class="page-info">第 ${_ovPage} / ${totalPages} 頁（共 ${rows.length} 筆）</span>
+        <button data-ov-page="next" ${_ovPage >= totalPages ? 'disabled' : ''}>下頁 ›</button>
+        <select data-ov-jump style="padding:4px 6px;font-size:12px;">${Array.from({ length: totalPages }, (_, i) => `<option value="${i + 1}"${i + 1 === _ovPage ? ' selected' : ''}>第 ${i + 1} 頁</option>`).join('')}</select>
+      </div>`
+    : `<p class="muted" style="margin:6px 0;">共 ${rows.length} 筆</p>`;
+
+  dom.overviewList.innerHTML = `${pageNav}<div class="table-wrap"><table><thead><tr><th>#</th>${thRow}</tr></thead><tbody>
+    ${show.map((t, i) => `<tr>
+      <td style="color:#9bb2cc;font-size:12px;">${start + i + 1}</td>
+      <td class="col-date">${escapeHtml(t.dateROC)}</td>
+      <td class="col-voucher">${escapeHtml(t.voucherNo)}</td>
+      <td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</td>
+      <td class="col-summary">${escapeHtml(t.summary || '(空白摘要)')}</td>
+      <td class="col-amount">${fmtSigned(getSignedAmount(t))}</td>
+      <td class="col-amount">${fmtAmount(t.balance)}</td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
 }
 
 function renderOverviewSummary(rows) {
@@ -409,7 +474,7 @@ function renderBase() {
   renderAccountSelect(); renderStats(); renderF9AccountSelects();
   const rows = getFilteredTransactions();
   renderOverviewSummary(rows);
-  renderTxnList(dom.overviewList, rows, `目前篩選 ${rows.length} 筆`, { collapsible: false });
+  renderOverviewTable(rows);
   renderTxnList(dom.f1List, rows, `目前篩選 ${rows.length} 筆`);
   renderTxnList(dom.f2List, rows, `目前篩選 ${rows.length} 筆`);
   renderTxnList(dom.f3List, rows, `目前篩選 ${rows.length} 筆`);
@@ -810,7 +875,11 @@ function renderF1Draft() {
       <div style="margin-top:6px;"><label>分組名稱 <input data-f1-draft-name="${escapeHtml(name)}" value="${escapeHtml(finalName)}" /></label> <button data-f1-draft-del="${escapeHtml(name)}">刪除</button></div>
     </div>`;
   }).join('');
-  dom.f1Result.innerHTML = `<p class="muted">已產生 ${names.length} 個候選分組名稱（此步驟僅預覽名稱，不會先分組）。請先調整名稱，再按「套用分組」。</p>${blocks || '<p class="muted">無可分組資料。</p>'}`;
+  dom.f1Result.innerHTML = `<p class="muted">已產生 ${names.length} 個候選分組名稱（此步驟僅預覽名稱，不會先分組）。請先調整名稱，再按「套用分組」。</p>
+    <div class="toolbar" style="margin-bottom:8px;">
+      <button data-f1-bulk-delete="1" style="border-color:#ffb8b8;color:var(--danger);">批量刪除分組…</button>
+    </div>
+    ${blocks || '<p class="muted">無可分組資料。</p>'}`;
 }
 
 function applyF1GroupingFromDraft() {
@@ -954,6 +1023,76 @@ function renderF1Output() {
   dom.f1CopyOutput.innerHTML = copyItems.length
     ? `<div class="muted">點選分組可跳到明細：</div><div style="margin-top:6px;">${copyItems.map((x) => `<button data-f1-jump="${x.anchorId}" style="margin:0 6px 6px 0;">${escapeHtml(x.text)}</button>`).join('')}</div>`
     : '(尚無分組摘要)';
+}
+
+function showF1BulkDeleteModal() {
+  const allNames = Array.from(new Set(
+    (AppState.grouping.draftItems || []).map((d) => d.proposed)
+      .concat(AppState.grouping.draftExtraGroups || [])
+  )).filter((n) => n && n !== '其他').sort((a, b) => a.localeCompare(b, 'zh-TW'));
+
+  if (!allNames.length) { toast('沒有可刪除的分組', 'WARN'); return; }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-box">
+    <div class="modal-header">
+      <h4>批量刪除分組</h4>
+      <button data-modal-close style="background:transparent;border:none;font-size:18px;color:#9bb2cc;padding:0 4px;">✕</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 12px;background:#f7fafe;border-radius:8px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;cursor:pointer;">
+        <input type="checkbox" id="modalSelectAll" style="width:15px;height:15px;" /> 全選（${allNames.length} 個）
+      </label>
+      <span class="muted" id="modalSelectedCount" style="margin-left:auto;">已選 0 個</span>
+    </div>
+    <div class="modal-body" style="max-height:320px;">
+      ${allNames.map((n) => `<label class="modal-item">
+        <input type="checkbox" class="modal-group-cb" value="${escapeHtml(n)}" />
+        <span style="flex:1;">${escapeHtml(n)}</span>
+      </label>`).join('')}
+    </div>
+    <div class="modal-footer">
+      <span class="muted" style="font-size:12px;">選取後將把該分組的分錄移入「其他」</span>
+      <div style="display:flex;gap:8px;">
+        <button data-modal-close>取消</button>
+        <button id="modalConfirmDel" class="danger">刪除選取</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+
+  const updateCount = () => {
+    const n = overlay.querySelectorAll('.modal-group-cb:checked').length;
+    document.getElementById('modalSelectedCount').textContent = `已選 ${n} 個`;
+    const btn = document.getElementById('modalConfirmDel');
+    if (btn) btn.disabled = n === 0;
+  };
+
+  const selectAll = document.getElementById('modalSelectAll');
+  selectAll.addEventListener('change', (e) => {
+    overlay.querySelectorAll('.modal-group-cb').forEach((cb) => { cb.checked = e.target.checked; });
+    updateCount();
+  });
+  overlay.querySelectorAll('.modal-group-cb').forEach((cb) => cb.addEventListener('change', () => {
+    selectAll.indeterminate = true;
+    updateCount();
+  }));
+  overlay.querySelectorAll('[data-modal-close]').forEach((btn) => btn.addEventListener('click', () => overlay.remove()));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  document.getElementById('modalConfirmDel').addEventListener('click', () => {
+    const toDelete = new Set(Array.from(overlay.querySelectorAll('.modal-group-cb:checked')).map((cb) => cb.value));
+    if (!toDelete.size) return;
+    AppState.grouping.draftItems.forEach((d) => { if (toDelete.has(d.proposed)) d.proposed = '其他'; });
+    AppState.grouping.draftExtraGroups = (AppState.grouping.draftExtraGroups || []).filter((x) => !toDelete.has(x));
+    toDelete.forEach((n) => delete AppState.grouping.draftRenameMap[n]);
+    AppState.grouping.mode = 'draft';
+    overlay.remove();
+    renderF1Draft();
+    toast(`已批量刪除 ${toDelete.size} 個分組`);
+  });
+  updateCount();
 }
 
 function runF1Grouping() {
@@ -2613,6 +2752,7 @@ function bindEvents() {
   });
 
   dom.f1Result.addEventListener('click', (e) => {
+    if (e.target?.dataset?.f1BulkDelete) { showF1BulkDeleteModal(); return; }
     const draftDel = e.target?.dataset?.f1DraftDel;
     if (draftDel) {
       // Remove preview name from current candidate set, but keep source for future restore.
@@ -3095,6 +3235,25 @@ function bindEvents() {
   });
   dom.copyTodoAllBtn.addEventListener('click', () => {
     copyText(AppState.todos.map((t) => `${t.voucherNo} ${t.content}`).join('\n'), '待辦已全部複製');
+  });
+
+  // ---- Overview sort & pagination ----
+  dom.overviewList.addEventListener('click', (e) => {
+    const sortCol = e.target?.closest?.('[data-ov-sort]')?.dataset?.ovSort;
+    if (sortCol) {
+      if (_ovSort.col === sortCol) _ovSort.dir = _ovSort.dir === 'asc' ? 'desc' : 'asc';
+      else { _ovSort.col = sortCol; _ovSort.dir = 'asc'; }
+      _ovPage = 1;
+      renderOverviewTable(getFilteredTransactions());
+      return;
+    }
+    const page = e.target?.dataset?.ovPage;
+    if (page === 'prev') { _ovPage = Math.max(1, _ovPage - 1); renderOverviewTable(getFilteredTransactions()); return; }
+    if (page === 'next') { _ovPage += 1; renderOverviewTable(getFilteredTransactions()); return; }
+  });
+  dom.overviewList.addEventListener('change', (e) => {
+    const jump = e.target?.dataset?.ovJump;
+    if (jump) { _ovPage = Number(jump) || 1; renderOverviewTable(getFilteredTransactions()); }
   });
 
   // ---- F10 / F11 / F13 / F15 ----

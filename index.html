@@ -245,6 +245,7 @@
           <input id="fileInput" type="file" accept=".xlsx,.xls" style="display:none;" />
         </label>
         <button id="resetBtn">重新上傳</button>
+        <button id="clearLocalBtn" style="color:var(--danger);border-color:var(--danger);">清除本地資料</button>
       </div>
     </header>
 
@@ -252,24 +253,24 @@
       <aside class="nav">
         <div class="nav-section">帳務概覽</div>
         <button class="active" data-module="overview">📋 總覽</button>
-        <button data-module="f7">⚖️ F7 試算表</button>
+        <button data-module="f7">⚖️ 試算表</button>
         <div class="nav-section">核對分析</div>
-        <button data-module="f1">🗂 F1 摘要分組</button>
-        <button data-module="f2">🔗 F2 沖帳</button>
-        <button data-module="f3">🔢 F3 數字池</button>
-        <button data-module="f5">🔍 F5 跨科目連結</button>
+        <button data-module="f1">🗂 摘要分組</button>
+        <button data-module="f2">🔗 沖帳配對</button>
+        <button data-module="f3">🔢 數字池</button>
+        <button data-module="f5">🔍 跨科目連結</button>
         <div class="nav-section">偵測稽核</div>
-        <button data-module="f4">⚠️ F4 異常偵測</button>
-        <button data-module="f6">📅 F6 時間斷層</button>
-        <button data-module="f14">📌 F14 重複傳票</button>
-        <button data-module="f18">📈 F18 金額變動</button>
+        <button data-module="f4">⚠️ 異常偵測</button>
+        <button data-module="f6">📅 時間斷層</button>
+        <button data-module="f14">📌 重複傳票</button>
+        <button data-module="f18">📈 金額變動</button>
         <div class="nav-section">進階分析</div>
-        <button data-module="f10">🧾 F10 傳票借貸</button>
-        <button data-module="f11">📊 F11 月份矩陣</button>
-        <button data-module="f13">📉 F13 餘額走勢</button>
-        <button data-module="f15">🏷 F15 摘要頻率</button>
+        <button data-module="f10">🧾 傳票借貸驗算</button>
+        <button data-module="f11">📊 月份矩陣</button>
+        <button data-module="f13">📉 餘額走勢</button>
+        <button data-module="f15">🏷 摘要頻率</button>
         <div class="nav-section">備忘工具</div>
-        <button data-module="f9">📝 F9 備忘索取</button>
+        <button data-module="f9">📝 備忘索取</button>
       </aside>
 
       <main class="content">
@@ -293,12 +294,13 @@
 
         <section class="card module active" id="module-overview">
           <h3>解析後明細</h3>
+          <div id="crossFileResult"></div>
           <div id="overviewSummary" style="margin-bottom:12px;"></div>
           <div id="overviewList"></div>
         </section>
 
         <section class="card module" id="module-f1">
-          <h3>F1 摘要分組（Rule Engine v2）</h3>
+          <h3>摘要分組</h3>
           <div class="toolbar">
             <button id="runF1Btn" class="primary">預覽分組名稱</button>
             <button id="applyF1Btn">套用分組</button>
@@ -316,7 +318,7 @@
         </section>
 
         <section class="card module" id="module-f2">
-          <h3>F2 沖帳</h3>
+          <h3>沖帳配對</h3>
           <div class="grid">
             <label>容差（預設 0.01）
               <input id="f2Tolerance" type="number" step="0.01" min="0" value="0.01" />
@@ -336,7 +338,7 @@
         </section>
 
         <section class="card module" id="module-f3">
-          <h3>F3 數字池</h3>
+          <h3>數字池</h3>
           <div class="grid">
             <label>方向
               <select id="f3Direction">
@@ -367,7 +369,7 @@
         </section>
 
         <section class="card module" id="module-f4">
-          <h3>F4 異常偵測</h3>
+          <h3>異常偵測</h3>
           <div class="toolbar">
             <button id="runF4Btn" class="primary">掃描異常</button>
             <button id="exportF4Btn">匯出 CSV</button>
@@ -379,7 +381,7 @@
         </section>
 
         <section class="card module" id="module-f5">
-          <h3>F5 跨科目連結</h3>
+          <h3>跨科目連結</h3>
           <div class="grid">
             <label>模式
               <select id="f5Mode">
@@ -409,7 +411,7 @@
         </section>
 
         <section class="card module" id="module-f6">
-          <h3>F6 時間斷層</h3>
+          <h3>時間斷層偵測</h3>
           <div class="grid">
             <label>摘要關鍵字（可空白）
               <input id="f6Keyword" type="text" />
@@ -443,7 +445,7 @@
         </section>
 
         <section class="card module" id="module-f7">
-          <h3>F7 試算表（Trial Balance）</h3>
+          <h3>試算表</h3>
           <p class="muted" style="margin-top:0;">匯總各科目期初餘額、本期借貸發生額及期末餘額，並驗算借貸是否平衡。</p>
           <div class="toolbar">
             <button id="runF7Btn" class="primary">產生試算表</button>
@@ -453,7 +455,7 @@
         </section>
 
         <section class="card module" id="module-f9">
-          <h3>F9 科目備忘 & 索取清單</h3>
+          <h3>科目備忘與索取清單</h3>
           <p class="muted" style="margin-top:0;">針對各科目書寫備忘、設定期望分錄規則，掃描缺少的費用帳，並輸出索取清單給客戶。</p>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
@@ -511,18 +513,18 @@
         </section>
 
         <section class="card module" id="module-f14">
-          <h3>F14 重複傳票號碼偵測</h3>
+          <h3>重複傳票號碼偵測</h3>
           <div class="toolbar">
             <button id="runF14Btn" class="primary">掃描重複傳票</button>
             <button id="exportF14Btn">匯出 CSV</button>
           </div>
           <div id="f14Result" style="margin-top:10px;"></div>
-          <div class="list-title">未命中 F14 清單</div>
+          <div class="list-title">未命中重複傳票清單</div>
           <div id="f14List"></div>
         </section>
 
         <section class="card module" id="module-f18">
-          <h3>F18 同摘要金額變動追蹤</h3>
+          <h3>同摘要金額變動追蹤</h3>
           <div class="grid">
             <label>摘要關鍵字（可批量）
               <input id="f18Keyword" type="text" placeholder="例如：租金、勞保費（可用逗號/頓號/換行）" />
@@ -542,7 +544,7 @@
         </section>
 
         <section class="card module" id="module-f10">
-          <h3>F10 傳票借貸平衡驗證</h3>
+          <h3>傳票借貸平衡驗證</h3>
           <p class="muted" style="margin-top:0;">依傳票號碼彙整跨科目借貸總額，驗算是否借方 = 貸方。借貸不等代表分錄遺漏或重複，需優先釐清。</p>
           <div class="grid">
             <label>容差
@@ -556,7 +558,7 @@
         </section>
 
         <section class="card module" id="module-f11">
-          <h3>F11 科目月份矩陣</h3>
+          <h3>科目月份矩陣</h3>
           <p class="muted" style="margin-top:0;">各科目 × 各月份彙總，快速識別異常月份、缺失期間及金額異動。</p>
           <div class="grid">
             <label>顯示欄位
@@ -575,7 +577,7 @@
         </section>
 
         <section class="card module" id="module-f13">
-          <h3>F13 科目餘額走勢</h3>
+          <h3>科目餘額走勢</h3>
           <p class="muted" style="margin-top:0;">逐筆追蹤選定科目的計算餘額與帳上餘額，快速定位第一筆餘額跳掉的分錄。</p>
           <div class="grid">
             <label>科目
@@ -595,7 +597,7 @@
         </section>
 
         <section class="card module" id="module-f15">
-          <h3>F15 摘要頻率分析</h3>
+          <h3>摘要頻率分析</h3>
           <p class="muted" style="margin-top:0;">統計各摘要出現頻率，識別孤筆（出現1次，可能誤記）與系統性分錄，輔助核對帳務完整性。</p>
           <div class="grid">
             <label>排序
@@ -623,7 +625,7 @@
 
   <section class="todo" id="todoPanel">
     <div class="todo-head">
-      <strong>F8 待辦 <span id="todoBadge">0</span></strong>
+      <strong>待辦事項 <span id="todoBadge">0</span></strong>
       <button id="todoToggleBtn" type="button">隱藏</button>
     </div>
     <div class="todo-body">

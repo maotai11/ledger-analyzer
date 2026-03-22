@@ -19,6 +19,63 @@ let poolWorker = null;
 let _ovSort = { col: 'dateROC', dir: 'asc' };
 let _ovPage = 1;
 const OV_PAGE_SIZE = 150;
+// ---- Company prefix cross-file comparison ----
+function getCompanyKey(fileName) {
+  return String(fileName || '').replace(/\.[^.]+$/, '').slice(0, 8);
+}
+function loadPrevCompanyData() {
+  try {
+    return { key: localStorage.getItem('ledger_company_key') || '', summaries: JSON.parse(localStorage.getItem('ledger_prev_summaries') || '{}') };
+  } catch { return { key: '', summaries: {} }; }
+}
+function saveCompanyData(fileName, transactions) {
+  try {
+    const key = getCompanyKey(fileName);
+    const summaries = {};
+    for (const t of transactions) {
+      if (!summaries[t.accountCode]) summaries[t.accountCode] = [];
+      const s = cleanText(t.summary || '');
+      if (s && !summaries[t.accountCode].includes(s)) summaries[t.accountCode].push(s);
+    }
+    localStorage.setItem('ledger_company_key', key);
+    localStorage.setItem('ledger_prev_summaries', JSON.stringify(summaries));
+  } catch { /* ignore */ }
+}
+function renderCrossFileResult(fileName, transactions) {
+  const el = dom.crossFileResult;
+  if (!el) return;
+  const newKey = getCompanyKey(fileName);
+  const prev = loadPrevCompanyData();
+  if (!prev.key || !Object.keys(prev.summaries).length) { el.innerHTML = ''; return; }
+  if (prev.key !== newKey) {
+    el.innerHTML = `<div class="card" style="border-color:var(--warn);background:#fff8f0;margin-bottom:10px;"><strong style="color:var(--warn);">⚠️ 偵測到不同公司</strong><div class="muted" style="margin-top:4px;">前次公司代碼：<code>${escapeHtml(prev.key)}</code>，本次：<code>${escapeHtml(newKey)}</code>。備忘與規則已保留，跨期比對不適用。</div></div>`;
+    return;
+  }
+  const newSummaries = {};
+  for (const t of transactions) {
+    if (!newSummaries[t.accountCode]) newSummaries[t.accountCode] = new Set();
+    const s = cleanText(t.summary || ''); if (s) newSummaries[t.accountCode].add(s);
+  }
+  const missing = [], added = [];
+  const allAccts = new Set([...Object.keys(prev.summaries), ...Object.keys(newSummaries)]);
+  for (const code of allAccts) {
+    const prevSet = new Set(prev.summaries[code] || []);
+    const newSet = newSummaries[code] || new Set();
+    const gone = [...prevSet].filter((s) => !newSet.has(s));
+    const appeared = [...newSet].filter((s) => !prevSet.has(s));
+    if (gone.length) missing.push({ code, summaries: gone });
+    if (appeared.length) added.push({ code, summaries: appeared });
+  }
+  if (!missing.length && !added.length) {
+    el.innerHTML = `<div class="card" style="border-color:var(--ok);background:#f6ffed;margin-bottom:10px;"><strong style="color:var(--ok);">✓ 跨期比對：摘要完整</strong><div class="muted" style="margin-top:4px;">與前次同公司檔案相比，所有摘要均已存在，未發現缺少分錄。</div></div>`;
+    return;
+  }
+  const missingHtml = missing.length
+    ? `<div style="margin-top:8px;"><strong class="danger">前次有、本次無（可能缺少分錄，共 ${missing.reduce((s, x) => s + x.summaries.length, 0)} 筆）：</strong><ul style="margin:4px 0 0;padding-left:16px;font-size:13px;">${missing.map((m) => `<li>[${escapeHtml(m.code)}] ${m.summaries.map(escapeHtml).join('、')}</li>`).join('')}</ul></div>` : '';
+  const addedHtml = added.length
+    ? `<div style="margin-top:8px;"><strong style="color:var(--ok);">本次新增摘要（${added.reduce((s, x) => s + x.summaries.length, 0)} 筆）：</strong><ul style="margin:4px 0 0;padding-left:16px;font-size:13px;">${added.map((a) => `<li>[${escapeHtml(a.code)}] ${a.summaries.map(escapeHtml).join('、')}</li>`).join('')}</ul></div>` : '';
+  el.innerHTML = `<div class="card" style="border-color:var(--warn);background:#fffbe6;margin-bottom:10px;"><strong style="color:var(--warn);">🔄 跨期比對（同公司 ${escapeHtml(newKey)}…）</strong>${missingHtml}${addedHtml}</div>`;
+}
 // User settings persistence (localStorage) for F2 parameters
 function loadUserSettings() {
   try {
@@ -40,7 +97,7 @@ const dom = {
   fileInput: document.getElementById('fileInput'), resetBtn: document.getElementById('resetBtn'), metaText: document.getElementById('metaText'),
   stats: document.getElementById('stats'), accountSelect: document.getElementById('accountSelect'), keywordInput: document.getElementById('keywordInput'),
   navButtons: Array.from(document.querySelectorAll('.nav button[data-module]')), modules: Array.from(document.querySelectorAll('.module')),
-  overviewList: document.getElementById('overviewList'), runF1Btn: document.getElementById('runF1Btn'), applyF1Btn: document.getElementById('applyF1Btn'),
+  overviewList: document.getElementById('overviewList'), crossFileResult: document.getElementById('crossFileResult'), clearLocalBtn: document.getElementById('clearLocalBtn'), runF1Btn: document.getElementById('runF1Btn'), applyF1Btn: document.getElementById('applyF1Btn'),
   f1NewGroupName: document.getElementById('f1NewGroupName'), f1AddGroupBtn: document.getElementById('f1AddGroupBtn'), exportF1Btn: document.getElementById('exportF1Btn'),
   copyF1TextBtn: document.getElementById('copyF1TextBtn'), f1CopyOutput: document.getElementById('f1CopyOutput'),
   f1Result: document.getElementById('f1Result'), f1List: document.getElementById('f1List'), runF2Btn: document.getElementById('runF2Btn'),
@@ -321,14 +378,15 @@ function parseWorkbook(arrayBuffer, fileName) {
 
     const debit = map.debit >= 0 ? dec(row[map.debit]) : dec(0);
     const credit = map.credit >= 0 ? dec(row[map.credit]) : dec(0);
-    const dupKey = `${currentAccount.code}||${voucherNo}||${d.dateISO}||${decKey(debit)}||${decKey(credit)}`;
+    const txnSummary = pickSummary(row, map);
+    const dupKey = `${currentAccount.code}||${voucherNo}||${d.dateISO}||${decKey(debit)}||${decKey(credit)}||${txnSummary}`;
     if (seen.has(dupKey)) { ig.crossPageDup += 1; continue; }
     seen.add(dupKey);
 
     const txn = {
       id: Math.random().toString(36).slice(2, 10), accountCode: currentAccount.code, accountName: currentAccount.name,
       accountNormalSide: currentAccount.normalSide, voucherNo, date: d.date, dateISO: d.dateISO, dateROC: d.dateROC,
-      periodROC: d.periodROC, summary: pickSummary(row, map), debit: decToNum(debit), credit: decToNum(credit),
+      periodROC: d.periodROC, summary: txnSummary, debit: decToNum(debit), credit: decToNum(credit),
       drCr: map.drCr >= 0 ? cleanText(row[map.drCr]) : '', balance: map.balance >= 0 ? decToNum(dec(row[map.balance])) : 0,
     };
     txns.push(txn); accounts[currentAccount.code].transactionIds.push(txn.id);
@@ -344,6 +402,12 @@ function parseWorkbook(arrayBuffer, fileName) {
 
   if (hasFuse) searchEngine = new Fuse(txns, { keys: ['summary', 'voucherNo', 'accountName'], threshold: 0.35 });
   toast(`解析完成：${txns.length} 筆有效分錄｜${Object.keys(accounts).length} 個科目｜${ig.crossPageDup} 筆跨頁重複已合併｜${AppState.meta.skippedRows} 列已忽略`);
+  // Cross-file comparison (must run before saveCompanyData overwrites previous)
+  renderCrossFileResult(fileName, txns);
+  saveCompanyData(fileName, txns);
+  // Clear stale F9 scan result so user reruns against new file
+  AppState.memo.missingResults = [];
+  if (dom.f9Result) dom.f9Result.innerHTML = '<p class="muted">已載入新檔案，請重新執行「掃描缺少分錄」。</p>';
   renderBase();
 }
 
@@ -505,7 +569,7 @@ function renderStats() {
   if (!AppState.meta.parsedAt) return;
   const ig = AppState.meta.igCount;
   dom.metaText.textContent = `檔案：${AppState.meta.company}｜解析時間：${new Date(AppState.meta.parsedAt).toLocaleString('zh-TW')}`;
-  dom.stats.textContent = `有效分錄 ${AppState.transactions.length}｜科目 ${Object.keys(AppState.accounts).length}｜IGN-1:${ig.header} IGN-2:${ig.monthly} IGN-3:${ig.opening} IGN-4:${ig.accountHeader} IGN-5:${ig.crossPageDup} 其他:${ig.invalid + ig.other}｜摘要欄索引:${AppState.meta.columnMap.summary}`;
+  dom.stats.textContent = `有效分錄 ${AppState.transactions.length}｜科目 ${Object.keys(AppState.accounts).length}｜略過：標題行 ${ig.header} 月計 ${ig.monthly} 上期結轉 ${ig.opening} 科目標頭 ${ig.accountHeader} 跨頁重複 ${ig.crossPageDup} 無效 ${ig.invalid + ig.other}｜摘要欄第 ${AppState.meta.columnMap.summary + 1} 欄`;
 }
 
 function normalizeForToken(s) { return cleanText(s).replace(/^[*@#＊＠＃]+/, ''); }
@@ -714,7 +778,7 @@ function renderF2UnmatchedEditor(rows) {
         <button data-f2-view="review">回到未沖帳清單</button>
         <button data-f2-suggest-refresh="1">重新掃描沖帳</button>
       </div>
-      <div class="muted" style="margin-top:6px;">未沖帳分組模式：操作與 F1 類似（改名、批次移動、刪除群組…）。</div>
+      <div class="muted" style="margin-top:6px;">未沖帳分組模式：可改名、批次移動、刪除群組，操作方式同摘要分組。</div>
     `;
     renderF2UnmatchedOrganizer(rows);
     dom.f2UnmatchedSummary.innerHTML = header + dom.f2UnmatchedSummary.innerHTML;
@@ -744,7 +808,7 @@ function renderF2UnmatchedEditor(rows) {
     : `<div class="muted" style="margin-top:6px;">（目前無建議沖帳）</div>`;
 
   dom.f2UnmatchedSummary.innerHTML = `
-    <div class="muted">未沖帳剩餘 ${rows.length} 筆。你可以先檢查是否有遺漏，再按「進入分組」用 F1 同款操作整理。</div>
+    <div class="muted">未沖帳剩餘 ${rows.length} 筆。可先確認是否有遺漏，再按「進入分組」整理歸類。</div>
     <div class="toolbar">
       <button data-f2-view="group">進入分組（未沖帳）</button>
       <button data-f2-suggest-refresh="1">重新掃描沖帳</button>
@@ -1585,7 +1649,7 @@ function runF14() {
   AppState.dupVoucher.results = results;
   const hit = new Set(results.flatMap((r) => r.entries.map((e) => e.id))); const remain = rows.filter((r) => !hit.has(r.id));
   dom.f14Result.innerHTML = results.length ? `<div class="table-wrap"><table><thead><tr><th>傳票號碼</th><th>科目</th><th>日期集合</th><th>筆數</th><th>嚴重度</th></tr></thead><tbody>${results.map((r) => `<tr><td>${escapeHtml(r.voucherNo)}</td><td>[${escapeHtml(r.accountCode)}] ${escapeHtml(r.accountName)}</td><td>${escapeHtml(Array.from(new Set(r.entries.map((e) => e.dateROC))).join(', '))}</td><td>${r.entries.length}</td><td class="warn">${r.severity}</td></tr>`).join('')}</tbody></table></div>` : `<p class="muted">命中 0 筆 F14，剩餘 ${remain.length} 筆仍顯示。</p>`;
-  renderTxnList(dom.f14List, remain, `未命中 F14 ${remain.length} 筆`);
+  renderTxnList(dom.f14List, remain, `未命中重複傳票 ${remain.length} 筆`);
 }
 
 function ensureF18OtherGroup() {
@@ -2175,7 +2239,7 @@ function bindEvents() {
   dom.runF6Btn.addEventListener('click', runF6);
   dom.runF14Btn.addEventListener('click', runF14);
   dom.runF18Btn.addEventListener('click', runF18);
-  dom.copyF18TextBtn.addEventListener('click', () => copyText(AppState.trendAlert.copyText || '', 'F18 分組摘要已複製'));
+  dom.copyF18TextBtn.addEventListener('click', () => copyText(AppState.trendAlert.copyText || '', '金額變動分組摘要已複製'));
 
   // F18 copy monthly table as tab-separated
   dom.f18Result?.addEventListener('click', (e) => {
@@ -2318,7 +2382,7 @@ function bindEvents() {
   dom.f3Result.addEventListener('click', (e) => {
     const copy = e.target?.dataset?.f3Copy;
     if (copy) {
-      copyText(AppState.pool.copyText || '', 'F3 分組摘要已複製');
+      copyText(AppState.pool.copyText || '', '數字池分組摘要已複製');
       return;
     }
     const jump = e.target?.dataset?.f3Jump;
@@ -2713,7 +2777,7 @@ function bindEvents() {
     runF2();
   });
 
-  dom.copyF2TextBtn.addEventListener('click', () => copyText(AppState.offset.copyText || '', 'F2 未沖帳整理已複製'));
+  dom.copyF2TextBtn.addEventListener('click', () => copyText(AppState.offset.copyText || '', '未沖帳整理已複製'));
 
   dom.f1Result.addEventListener('input', (e) => {
     const draftFrom = e.target?.dataset?.f1DraftName;
@@ -2996,7 +3060,7 @@ function bindEvents() {
     toast(`已新增 ${added} 個分組`);
   });
 
-  dom.copyF1TextBtn.addEventListener('click', () => copyText(AppState.grouping.copyText || '', 'F1 分組摘要已複製'));
+  dom.copyF1TextBtn.addEventListener('click', () => copyText(AppState.grouping.copyText || '', '分組摘要已複製'));
 
   dom.todoToggleBtn.addEventListener('click', () => {
     dom.todoPanel.classList.toggle('collapsed');
@@ -3256,7 +3320,17 @@ function bindEvents() {
     if (jump) { _ovPage = Number(jump) || 1; renderOverviewTable(getFilteredTransactions()); }
   });
 
-  // ---- F10 / F11 / F13 / F15 ----
+  // ---- Clear local storage ----
+  dom.clearLocalBtn?.addEventListener('click', () => {
+    if (!confirm('確定清除所有本地儲存的備忘、規則、設定及跨期比對記錄？此操作無法復原。')) return;
+    localStorage.clear();
+    AppState.memo.notes = {}; AppState.memo.rules = []; AppState.memo.missingResults = [];
+    if (dom.f9Result) dom.f9Result.innerHTML = '';
+    if (dom.crossFileResult) dom.crossFileResult.innerHTML = '';
+    renderF9Rules();
+    toast('本地資料已全部清除');
+  });
+  // ---- 進階分析 ----
   dom.runF10Btn?.addEventListener('click', runF10);
   dom.runF11Btn?.addEventListener('click', runF11);
   dom.f11Field?.addEventListener('change', () => { if (AppState.transactions.length && dom.f11Result?.innerHTML.trim()) runF11(); });

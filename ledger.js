@@ -1,9 +1,9 @@
 ﻿const DEFAULT_COLUMN_MAP = { date: 0, voucherNo: 4, summary: 10, debit: 14, credit: 17, drCr: 19, balance: 21 };
 
 const AppState = {
-  meta: { company: '', parsedAt: null, skippedRows: 0, igCount: { header: 0, monthly: 0, opening: 0, accountHeader: 0, crossPageDup: 0, invalid: 0, other: 0 }, columnMap: { ...DEFAULT_COLUMN_MAP } },
+  meta: { company: '', parsedAt: null, skippedRows: 0, igCount: { header: 0, monthly: 0, opening: 0, accountHeader: 0, crossPageDup: 0, invalid: 0, other: 0 }, columnMap: { ...DEFAULT_COLUMN_MAP }, excludedRows: [] },
   accounts: {}, transactions: [],
-  grouping: { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '' },
+  grouping: { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '', keywordRules: [] },
   groupingStore: {}, activeGroupingKey: 'all',
   offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], manualMatches: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '', suggestThreshold: 80, timeWindowDays: 14, subsetMaxK: 4, subsetTimeLimitMs: 1200, unmatchedView: 'review' },
   pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [], reviewed: new Set() }, crossLink: { mode: 'keyword', query: '', results: [] },
@@ -133,10 +133,98 @@ const dom = {
   runF11Btn: document.getElementById('runF11Btn'), f11Result: document.getElementById('f11Result'), f11Field: document.getElementById('f11Field'),
   runF13Btn: document.getElementById('runF13Btn'), f13Result: document.getElementById('f13Result'), f13AccountSelect: document.getElementById('f13AccountSelect'), f13AnomalyMode: document.getElementById('f13AnomalyMode'),
   runF15Btn: document.getElementById('runF15Btn'), f15Result: document.getElementById('f15Result'), f15Sort: document.getElementById('f15Sort'), f15MinCount: document.getElementById('f15MinCount'), f15MaxCount: document.getElementById('f15MaxCount'),
+  workbenchCard: document.getElementById('workbenchCard'), workbenchBody: document.getElementById('workbenchBody'), workbenchToggle: document.getElementById('workbenchToggle'),
+  f1TabGroup: document.getElementById('f1TabGroup'), f1TabExclusion: document.getElementById('f1TabExclusion'), f1ExclusionView: document.getElementById('f1ExclusionView'), f1ExclusionResult: document.getElementById('f1ExclusionResult'),
+  f1KeywordRulesBtn: document.getElementById('f1KeywordRulesBtn'), f1KeywordRulesPanel: document.getElementById('f1KeywordRulesPanel'),
+  kwRuleName: document.getElementById('kwRuleName'), kwRuleKeywords: document.getElementById('kwRuleKeywords'), kwRuleExclude: document.getElementById('kwRuleExclude'), kwRuleTarget: document.getElementById('kwRuleTarget'), kwRulePriority: document.getElementById('kwRulePriority'), kwAddRuleBtn: document.getElementById('kwAddRuleBtn'), kwRuleList: document.getElementById('kwRuleList'),
+  f1MainContent: document.getElementById('f1MainContent'),
 };
 
 function escapeHtml(v) { return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function cleanText(v) { return v == null ? '' : String(v).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+function normalizeSummary(raw) {
+  if (!raw) return '';
+  let s = String(raw);
+  // Remove carriage returns and _x000D_ artifacts
+  s = s.replace(/_x000D_/gi, '').replace(/\r/g, '');
+  // Normalize full-width spaces and common punctuation
+  s = s.replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim();
+  // Strip leading serial/sequence numbers like "123.", "A001-", "甲01."
+  s = s.replace(/^[\d０-９]{1,6}[.\-、\s。]+/, '');
+  s = s.replace(/^[A-Za-z]{0,3}[\d０-９]{2,6}[.\-\s]+/, '');
+  // Strip trailing ROC/AD date patterns like 114/01/15 or 2025-01-15
+  s = s.replace(/[\s　]+\d{2,4}[-/]\d{1,2}[-/]\d{1,2}$/, '');
+  // Strip parenthetical internal code patterns like (AB-123) if code-like
+  s = s.replace(/\s*\([A-Z0-9\-_]{2,12}\)\s*$/, '');
+  // Final trim
+  s = s.trim();
+  return s || String(raw).trim();
+}
+
+function classifyRow(row, map) {
+  const texts = row.map((c) => String(c == null ? '' : c).trim());
+  const joined = texts.join(' ');
+  const hasAnyNum = row.some((c) => typeof c === 'number' && c !== 0);
+  const hasVoucher = map.voucherNo >= 0 && texts[map.voucherNo] && texts[map.voucherNo].length >= 1;
+  // Month/period totals
+  if (/月計|本月合計|月份合計|小計|本期合計/.test(joined)) return 'month_total';
+  // Cumulative totals
+  if (/累計|年度累計|至今|本年累計/.test(joined)) return 'cumulative_total';
+  // Opening balance
+  if (/上期結轉|前期餘額|期初餘額|期初|上期餘額/.test(joined)) return 'opening_balance';
+  // Table header row (column labels)
+  if (/日期|摘要|借方|貸方|傳票|科目/.test(joined) && !hasAnyNum) return 'table_header';
+  // Account header
+  if (/科目：|科目:/.test(joined) && !hasVoucher) return 'account_header';
+  // Transaction: has voucher or has numeric amounts
+  if (hasVoucher && hasAnyNum) return 'transaction';
+  if (hasAnyNum && !hasVoucher) return 'transaction'; // might be a valid entry
+  // No numbers at all → likely header/page
+  if (!hasAnyNum) return 'page_header';
+  return 'unknown';
+}
+
+function applyKeywordRules(summaryNorm, rules) {
+  if (!rules || !rules.length) return null;
+  const sorted = [...rules].filter((r) => r.enabled).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  for (const rule of sorted) {
+    const kws = (rule.keywords || []).map((k) => k.toLowerCase());
+    const excl = (rule.excludeWords || []).map((k) => k.toLowerCase());
+    const low = summaryNorm.toLowerCase();
+    if (kws.length && !kws.some((k) => low.includes(k))) continue;
+    if (excl.some((k) => low.includes(k))) continue;
+    return rule.targetGroup;
+  }
+  return null;
+}
+
+const STORAGE_VERSION = 1;
+
+function loadKeywordRules() {
+  try {
+    const raw = localStorage.getItem('ledger_keyword_rules');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (parsed.version !== STORAGE_VERSION) return [];
+    return Array.isArray(parsed.rules) ? parsed.rules : [];
+  } catch { return []; }
+}
+
+function saveKeywordRules(rules) {
+  try {
+    localStorage.setItem('ledger_keyword_rules', JSON.stringify({ version: STORAGE_VERSION, rules }));
+  } catch { /* ignore */ }
+}
+
+function loadWhitelist() {
+  try { return JSON.parse(localStorage.getItem('ledger_exclusion_whitelist') || '[]'); }
+  catch { return []; }
+}
+
+function saveWhitelist(list) {
+  try { localStorage.setItem('ledger_exclusion_whitelist', JSON.stringify(list)); } catch { /* ignore */ }
+}
 function cleanSummary(v) { return cleanText(String(v ?? '').replace(/_x000D_\n/g, ' ').replace(/\r?\n/g, ' ')); }
 function fmtAmount(v) { const n = Number(v); return Number.isFinite(n) ? n.toLocaleString('zh-TW', { maximumFractionDigits: 2 }) : ''; }
 function dec(v) { if (!hasDecimal) return Number(v || 0) || 0; try { return new Decimal(String(v ?? '').replace(/,/g, '').trim() || 0); } catch { return new Decimal(0); } }
@@ -353,48 +441,97 @@ function parseWorkbook(arrayBuffer, fileName) {
 
   const accounts = {}; const txns = []; const seen = new Set();
   const ig = { header: 0, monthly: 0, opening: 0, accountHeader: 0, crossPageDup: 0, invalid: 0, other: 0 };
+  const excludedRows = [];
   let currentAccount = null;
 
-  for (const row of rows) {
+  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
     const colA = cleanText(row[map.date]);
-    if (!colA) { ig.other += 1; continue; }
-    if (looksLikeHeaderRow(colA)) { ig.header += 1; continue; }
-    if (colA.startsWith('月計:') || colA.startsWith('累計:')) { ig.monthly += 1; continue; }
+    if (!colA) {
+      ig.other += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '空白列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
+    }
+    if (looksLikeHeaderRow(colA)) {
+      ig.header += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: 'page_header', reason: '頁首/製表標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
+    }
+    if (colA.startsWith('月計:') || colA.startsWith('累計:')) {
+      ig.monthly += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map) || 'month_total', reason: '月計/累計列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
+    }
     if (colA.startsWith('項')) {
       const acc = parseAccountHeader(colA);
       if (acc) {
         currentAccount = acc;
         if (!accounts[acc.code]) accounts[acc.code] = { ...acc, openingBalance: null, transactionIds: [] };
       }
-      ig.accountHeader += 1; continue;
+      ig.accountHeader += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: 'account_header', reason: '科目標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
     }
     if (colA === '上期結轉') {
       if (currentAccount && map.balance >= 0 && accounts[currentAccount.code]) accounts[currentAccount.code].openingBalance = decToNum(dec(row[map.balance]));
-      ig.opening += 1; continue;
+      ig.opening += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: 'opening_balance', reason: '上期結轉列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
     }
 
     const voucherNo = cleanText(row[map.voucherNo]); const d = parseROCDate(colA);
-    if (!currentAccount || !voucherNo || !d) { ig.invalid += 1; continue; }
+    if (!currentAccount || !voucherNo || !d) {
+      ig.invalid += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '無效列（缺科目/傳票/日期）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: true });
+      continue;
+    }
 
     const debit = map.debit >= 0 ? dec(row[map.debit]) : dec(0);
     const credit = map.credit >= 0 ? dec(row[map.credit]) : dec(0);
     const txnSummary = pickSummary(row, map);
     const dupKey = `${currentAccount.code}||${voucherNo}||${d.dateISO}||${decKey(debit)}||${decKey(credit)}||${txnSummary}`;
-    if (seen.has(dupKey)) { ig.crossPageDup += 1; continue; }
+    if (seen.has(dupKey)) {
+      ig.crossPageDup += 1;
+      excludedRows.push({ rowIndex: rowIdx, rowType: 'transaction', reason: '跨頁重複列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      continue;
+    }
     seen.add(dupKey);
 
+    const rawSummary = txnSummary;
+    const summaryNormalized = normalizeSummary(rawSummary);
     const txn = {
       id: Math.random().toString(36).slice(2, 10), accountCode: currentAccount.code, accountName: currentAccount.name,
       accountNormalSide: currentAccount.normalSide, voucherNo, date: d.date, dateISO: d.dateISO, dateROC: d.dateROC,
-      periodROC: d.periodROC, summary: txnSummary, debit: decToNum(debit), credit: decToNum(credit),
+      periodROC: d.periodROC, summary: txnSummary, rawSummary, summaryNormalized,
+      debit: decToNum(debit), credit: decToNum(credit),
       drCr: map.drCr >= 0 ? cleanText(row[map.drCr]) : '', balance: map.balance >= 0 ? decToNum(dec(row[map.balance])) : 0,
+      hasMultiSummaryInVoucher: false, keywordGroupName: '', defaultGroupName: '', manualGroupName: '', effectiveGroupName: '',
     };
     txns.push(txn); accounts[currentAccount.code].transactionIds.push(txn.id);
   }
 
+  // Compute hasMultiSummaryInVoucher
+  const voucherSummaryMap = {};
+  for (const t of txns) {
+    if (!voucherSummaryMap[t.voucherNo]) voucherSummaryMap[t.voucherNo] = new Set();
+    voucherSummaryMap[t.voucherNo].add(t.rawSummary);
+  }
+  for (const t of txns) {
+    t.hasMultiSummaryInVoucher = (voucherSummaryMap[t.voucherNo]?.size || 0) > 1;
+  }
+
+  // Apply keyword rules and compute effectiveGroupName
+  const kwRules = loadKeywordRules();
+  for (const t of txns) {
+    t.keywordGroupName = applyKeywordRules(t.summaryNormalized, kwRules) || '';
+    t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized;
+  }
+
   AppState.accounts = accounts; AppState.transactions = txns; AppState.meta.company = fileName; AppState.meta.parsedAt = new Date().toISOString();
   AppState.meta.skippedRows = Object.values(ig).reduce((a, b) => a + b, 0); AppState.meta.igCount = ig; AppState.meta.columnMap = map;
+  AppState.meta.excludedRows = excludedRows;
   AppState.grouping = emptyGroupingState();
+  AppState.grouping.keywordRules = kwRules;
   AppState.groupingStore = {};
   AppState.groupingStore.all = cloneGroupingState(AppState.grouping);
   AppState.activeGroupingKey = 'all';
@@ -534,11 +671,167 @@ function renderOverviewSummary(rows) {
     </tr></tfoot></table></div>`;
 }
 
+function renderWorkbench() {
+  const card = dom.workbenchCard;
+  const body = dom.workbenchBody;
+  if (!card || !body) return;
+  card.style.display = '';
+
+  const txns = AppState.transactions;
+  const excluded = AppState.meta.excludedRows || [];
+
+  // Row type breakdown
+  const typeCount = {};
+  for (const r of excluded) typeCount[r.rowType] = (typeCount[r.rowType] || 0) + 1;
+  const typeSummary = Object.entries(typeCount).map(([t, n]) => `${t} ${n}`).join('、') || '無';
+
+  // Top 20 ungrouped (no defaultGroupName, keywordGroupName, or manualGroupName)
+  const ungrouped = {};
+  for (const t of txns) {
+    if (!t.defaultGroupName && !t.keywordGroupName && !t.manualGroupName) {
+      const key = t.summaryNormalized || t.rawSummary || t.summary;
+      ungrouped[key] = (ungrouped[key] || 0) + 1;
+    }
+  }
+  const top20ungrouped = Object.entries(ungrouped).sort((a, b) => b[1] - a[1]).slice(0, 20);
+
+  // Top 20 singletons (appear only once)
+  const summaryCount = {};
+  for (const t of txns) {
+    const key = t.summaryNormalized || t.rawSummary || t.summary;
+    summaryCount[key] = (summaryCount[key] || 0) + 1;
+  }
+  const singletons = Object.entries(summaryCount).filter(([, n]) => n === 1).slice(0, 20);
+
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:12px;">
+      <div class="card" style="padding:10px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:var(--brand);">${txns.length}</div>
+        <div class="muted">有效分錄</div>
+      </div>
+      <div class="card" style="padding:10px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:var(--warn);">${excluded.length}</div>
+        <div class="muted">被排除列 <button id="goExclusionBtn" style="font-size:11px;padding:2px 6px;margin-left:4px;">查看</button></div>
+      </div>
+      <div class="card" style="padding:10px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:var(--ink);">${Object.keys(ungrouped).length}</div>
+        <div class="muted">未分組摘要</div>
+      </div>
+      <div class="card" style="padding:10px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:var(--ink2);">${singletons.length}</div>
+        <div class="muted">孤筆摘要</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div class="list-title" style="margin-top:0;">列型別統計</div>
+        <div class="muted" style="font-size:12px;margin-top:4px;">${escapeHtml(typeSummary)}</div>
+        <div class="list-title">未分組摘要 Top 20</div>
+        ${top20ungrouped.length ? `<ul style="margin:4px 0 0;padding-left:16px;font-size:12px;">${top20ungrouped.map(([k, n]) => `<li>${escapeHtml(k)} <span class="pill">${n}筆</span></li>`).join('')}</ul>` : '<div class="muted" style="font-size:12px;margin-top:4px;">（全部已分組）</div>'}
+      </div>
+      <div>
+        <div class="list-title" style="margin-top:0;">孤筆摘要 Top 20</div>
+        ${singletons.length ? `<ul style="margin:4px 0 0;padding-left:16px;font-size:12px;">${singletons.map(([k]) => `<li>${escapeHtml(k)}</li>`).join('')}</ul>` : '<div class="muted" style="font-size:12px;margin-top:4px;">（無孤筆）</div>'}
+        <div style="margin-top:12px;">
+          <button id="goF1FromWorkbench" class="primary">前往摘要分組 →</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('goF1FromWorkbench')?.addEventListener('click', () => {
+    document.querySelector('[data-module="f1"]')?.click();
+  });
+  document.getElementById('goExclusionBtn')?.addEventListener('click', () => {
+    document.querySelector('[data-module="f1"]')?.click();
+    setTimeout(() => { dom.f1TabExclusion?.click(); }, 100);
+  });
+}
+
+function renderExclusionViewer() {
+  const el = dom.f1ExclusionResult;
+  if (!el) return;
+  const rows = AppState.meta.excludedRows || [];
+  if (!rows.length) {
+    el.innerHTML = '<p class="muted">無排除記錄。</p>';
+    return;
+  }
+  const whitelist = loadWhitelist();
+  el.innerHTML = `
+    <div class="muted" style="margin-bottom:8px;">共 ${rows.length} 列被排除。點「加入白名單」可避免下次誤排；「恢復顯示」暫時將此列加回明細。</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>列索引</th><th>列型別</th><th>排除原因</th><th>內容預覽</th><th>操作</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((r, i) => `
+            <tr style="${r.whitelisted ? 'opacity:0.5;' : ''}">
+              <td>${r.rowIndex + 1}</td>
+              <td><span class="pill">${escapeHtml(r.rowType)}</span></td>
+              <td>${escapeHtml(r.reason)}</td>
+              <td style="font-size:12px;max-width:300px;word-break:break-word;">${r.rawContent.filter(Boolean).slice(0, 5).map(escapeHtml).join(' | ')}</td>
+              <td style="white-space:nowrap;">
+                ${r.recoverable && !r.whitelisted ? `<button data-excl-whitelist="${i}" style="font-size:11px;padding:2px 6px;">加入白名單</button>` : ''}
+                ${r.whitelisted ? '<span class="ok">已白名單</span>' : ''}
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  el.addEventListener('click', (e) => {
+    const idx = e.target?.dataset?.exclWhitelist;
+    if (idx == null) return;
+    const row = rows[parseInt(idx)];
+    if (!row) return;
+    row.whitelisted = true;
+    const wl = loadWhitelist();
+    wl.push(row.rawContent.filter(Boolean).join('|'));
+    saveWhitelist(wl);
+    renderExclusionViewer();
+    toast('已加入白名單');
+  });
+}
+
+function renderKeywordRuleList() {
+  const el = dom.kwRuleList;
+  if (!el) return;
+  const rules = AppState.grouping.keywordRules || [];
+  if (!rules.length) { el.innerHTML = '<p class="muted">尚無規則。</p>'; return; }
+  el.innerHTML = rules.map((r, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:4px;background:#fff;">
+      <input type="checkbox" ${r.enabled ? 'checked' : ''} data-kw-toggle="${i}" />
+      <span style="flex:1;font-size:13px;"><strong>${escapeHtml(r.name)}</strong> → <em>${escapeHtml(r.targetGroup)}</em> &nbsp;<span class="muted">[${(r.keywords||[]).map(escapeHtml).join(', ')}]</span></span>
+      <span class="muted" style="font-size:11px;">優先序 ${r.priority}</span>
+      <button data-kw-delete="${i}" style="font-size:11px;padding:2px 6px;color:var(--danger);">刪除</button>
+    </div>
+  `).join('');
+  el.addEventListener('click', (e) => {
+    const del = e.target?.dataset?.kwDelete;
+    if (del != null) {
+      AppState.grouping.keywordRules.splice(parseInt(del), 1);
+      saveKeywordRules(AppState.grouping.keywordRules);
+      renderKeywordRuleList();
+      return;
+    }
+  });
+  el.addEventListener('change', (e) => {
+    const toggle = e.target?.dataset?.kwToggle;
+    if (toggle != null) {
+      AppState.grouping.keywordRules[parseInt(toggle)].enabled = e.target.checked;
+      saveKeywordRules(AppState.grouping.keywordRules);
+    }
+  });
+}
+
 function renderBase() {
   renderAccountSelect(); renderStats(); renderF9AccountSelects();
   const rows = getFilteredTransactions();
   renderOverviewSummary(rows);
   renderOverviewTable(rows);
+  renderWorkbench();
   renderTxnList(dom.f1List, rows, `目前篩選 ${rows.length} 筆`);
   renderTxnList(dom.f2List, rows, `目前篩選 ${rows.length} 筆`);
   renderTxnList(dom.f3List, rows, `目前篩選 ${rows.length} 筆`);
@@ -980,6 +1273,17 @@ function applyF1GroupingFromDraft() {
   AppState.grouping.ungrouped = [];
   AppState.grouping.mode = 'applied';
   ensureOtherGroup();
+  // Update defaultGroupName and effectiveGroupName on transactions
+  const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+  AppState.grouping.groups.forEach((g) => {
+    g.transactionIds.forEach((id) => {
+      const t = txMap.get(id);
+      if (t) {
+        t.defaultGroupName = g.name;
+        t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+      }
+    });
+  });
   renderF1Output();
 }
 
@@ -1010,6 +1314,17 @@ function applyF1GroupingEdits() {
   AppState.grouping.ungrouped = AppState.grouping.ungrouped.filter((id) => !seenTxn.has(id));
   AppState.grouping.mode = 'applied';
   ensureOtherGroup();
+  // Update defaultGroupName and effectiveGroupName on transactions
+  const txMapEdit = new Map(AppState.transactions.map((t) => [t.id, t]));
+  AppState.grouping.groups.forEach((g) => {
+    g.transactionIds.forEach((id) => {
+      const t = txMapEdit.get(id);
+      if (t) {
+        t.defaultGroupName = g.name;
+        t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+      }
+    });
+  });
   renderF1Output();
   toast('已套用編輯後分組');
 }
@@ -3339,11 +3654,65 @@ function bindEvents() {
   dom.f13AnomalyMode?.addEventListener('change', () => { if (AppState.transactions.length && dom.f13Result?.innerHTML.trim()) runF13(); });
   dom.runF15Btn?.addEventListener('click', runF15);
   dom.f15Sort?.addEventListener('change', () => { if (AppState.transactions.length && dom.f15Result?.innerHTML.trim()) runF15(); });
+
+  // ---- Workbench toggle ----
+  dom.workbenchToggle?.addEventListener('click', () => {
+    const body = dom.workbenchBody;
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    dom.workbenchToggle.textContent = hidden ? '收起' : '展開';
+  });
+
+  // ---- F1 tabs: 分組 / 排除記錄 ----
+  dom.f1TabGroup?.addEventListener('click', () => {
+    dom.f1TabGroup.classList.add('primary');
+    if (dom.f1TabExclusion) dom.f1TabExclusion.classList.remove('primary');
+    if (dom.f1ExclusionView) dom.f1ExclusionView.style.display = 'none';
+    if (dom.f1MainContent) dom.f1MainContent.style.display = '';
+    if (dom.f1KeywordRulesPanel) dom.f1KeywordRulesPanel.style.display = 'none';
+  });
+  dom.f1TabExclusion?.addEventListener('click', () => {
+    if (dom.f1TabExclusion) dom.f1TabExclusion.classList.add('primary');
+    if (dom.f1TabGroup) dom.f1TabGroup.classList.remove('primary');
+    if (dom.f1ExclusionView) dom.f1ExclusionView.style.display = '';
+    if (dom.f1MainContent) dom.f1MainContent.style.display = 'none';
+    if (dom.f1KeywordRulesPanel) dom.f1KeywordRulesPanel.style.display = 'none';
+    renderExclusionViewer();
+  });
+
+  // ---- F1 keyword rules panel ----
+  dom.f1KeywordRulesBtn?.addEventListener('click', () => {
+    const panel = dom.f1KeywordRulesPanel;
+    if (!panel) return;
+    panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    if (panel.style.display !== 'none') renderKeywordRuleList();
+  });
+
+  dom.kwAddRuleBtn?.addEventListener('click', () => {
+    const name = dom.kwRuleName?.value.trim();
+    const keywords = (dom.kwRuleKeywords?.value || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    const excludeWords = (dom.kwRuleExclude?.value || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    const targetGroup = dom.kwRuleTarget?.value.trim();
+    const priority = parseInt(dom.kwRulePriority?.value) || 10;
+    if (!name || !keywords.length || !targetGroup) { toast('請填寫規則名稱、關鍵字、目標分組'); return; }
+    if (!AppState.grouping.keywordRules) AppState.grouping.keywordRules = [];
+    const rule = { id: Math.random().toString(36).slice(2), name, enabled: true, keywords, excludeWords, targetGroup, priority, matchMode: 'contains-any' };
+    AppState.grouping.keywordRules.push(rule);
+    saveKeywordRules(AppState.grouping.keywordRules);
+    renderKeywordRuleList();
+    if (dom.kwRuleName) dom.kwRuleName.value = '';
+    if (dom.kwRuleKeywords) dom.kwRuleKeywords.value = '';
+    if (dom.kwRuleExclude) dom.kwRuleExclude.value = '';
+    if (dom.kwRuleTarget) dom.kwRuleTarget.value = '';
+    toast('規則已新增，重新套用分組後生效');
+  });
 }
 
 function init() {
   loadUserSettings();
   loadMemoStorage();
+  AppState.grouping.keywordRules = loadKeywordRules();
   bindEvents();
   renderTodos();
   renderF9Rules();

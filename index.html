@@ -294,6 +294,13 @@
 
         <section class="card module active" id="module-overview">
           <h3>解析後明細</h3>
+          <div id="workbenchCard" class="card" style="margin-bottom:12px;display:none;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <strong>快速工作台</strong>
+              <button id="workbenchToggle" style="padding:3px 8px;font-size:12px;">收起</button>
+            </div>
+            <div id="workbenchBody" style="margin-top:10px;"></div>
+          </div>
           <div id="crossFileResult"></div>
           <div id="overviewSummary" style="margin-bottom:12px;"></div>
           <div id="overviewList"></div>
@@ -301,20 +308,44 @@
 
         <section class="card module" id="module-f1">
           <h3>摘要分組</h3>
-          <div class="toolbar">
-            <button id="runF1Btn" class="primary">預覽分組名稱</button>
-            <button id="applyF1Btn">套用分組</button>
-            <input id="f1NewGroupName" type="text" placeholder="新增分組名稱" style="min-width:180px;" />
-            <button id="f1AddGroupBtn">新增分組</button>
-            <button id="exportF1Btn">匯出 CSV</button>
-            <button id="copyF1TextBtn">複製分組摘要</button>
-            <button id="mergeF1Btn">合併同名群組</button>
-            <button id="sortF1Btn">依名稱排序</button>
+          <div class="toolbar" style="border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px;">
+            <button id="f1TabGroup" class="primary">分組</button>
+            <button id="f1TabExclusion">排除記錄</button>
           </div>
-          <div id="f1CopyOutput" class="muted" style="margin-top:8px;"></div>
-          <div id="f1Result" style="margin-top:10px;"></div>
-          <div class="list-title">目前篩選清單</div>
-          <div id="f1List"></div>
+          <div id="f1ExclusionView" style="display:none;">
+            <div id="f1ExclusionResult"></div>
+          </div>
+          <div id="f1MainContent">
+            <div class="toolbar">
+              <button id="runF1Btn" class="primary">預覽分組名稱</button>
+              <button id="applyF1Btn">套用分組</button>
+              <input id="f1NewGroupName" type="text" placeholder="新增分組名稱" style="min-width:180px;" />
+              <button id="f1AddGroupBtn">新增分組</button>
+              <button id="exportF1Btn">匯出 CSV</button>
+              <button id="copyF1TextBtn">複製分組摘要</button>
+              <button id="mergeF1Btn">合併同名群組</button>
+              <button id="sortF1Btn">依名稱排序</button>
+              <button id="f1KeywordRulesBtn">關鍵字規則</button>
+            </div>
+            <div id="f1KeywordRulesPanel" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fafbfd;">
+              <strong>關鍵字分組規則</strong>
+              <div class="grid" style="margin-top:8px;">
+                <label>規則名稱 <input id="kwRuleName" type="text" placeholder="例：租金類" /></label>
+                <label>關鍵字（逗號分隔）<input id="kwRuleKeywords" type="text" placeholder="租金,房租,辦公室" /></label>
+                <label>排除詞（逗號分隔，可空）<input id="kwRuleExclude" type="text" placeholder="" /></label>
+                <label>目標分組名稱 <input id="kwRuleTarget" type="text" placeholder="租金費用" /></label>
+                <label>優先序（數字越大越優先）<input id="kwRulePriority" type="number" value="10" min="1" /></label>
+              </div>
+              <div class="toolbar">
+                <button id="kwAddRuleBtn" class="primary">新增規則</button>
+              </div>
+              <div id="kwRuleList" style="margin-top:10px;"></div>
+            </div>
+            <div id="f1CopyOutput" class="muted" style="margin-top:8px;"></div>
+            <div id="f1Result" style="margin-top:10px;"></div>
+            <div class="list-title">目前篩選清單</div>
+            <div id="f1List"></div>
+          </div>
         </section>
 
         <section class="card module" id="module-f2">

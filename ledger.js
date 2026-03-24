@@ -570,10 +570,16 @@ function renderTxnList(el, rows, note = '', opts = {}) {
   const show = rows.slice(0, limit);
   const hasMore = rows.length > limit;
   if (!collapsible) {
-    el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（僅顯示前 ${limit} 筆，請用篩選縮小範圍）</span>` : ''}</p><div class="table-wrap"><table><thead><tr><th>#</th><th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th><th class="col-amount">金額(符號)</th><th class="col-amount">餘額</th></tr></thead><tbody>${show.map((t, idx) => `<tr><td>${idx + 1}</td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</td><td class="col-summary">${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}</tbody></table></div>`;
+    el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（僅顯示前 ${limit} 筆，請用篩選縮小範圍）</span>` : ''}</p><div class="table-wrap"><table><thead><tr><th>#</th><th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th><th class="col-amount">金額(符號)</th><th class="col-amount">餘額</th></tr></thead><tbody>${show.map((t, idx) => `<tr><td>${idx + 1}</td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td><td class="col-summary">${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}${t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : ''}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td></tr>`).join('')}</tbody></table></div>`;
     return;
   }
-  el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（顯示前 ${limit} 筆）</span>` : ''}</p>${show.map((t, idx) => `<details class="card" style="margin:6px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}｜${escapeHtml((t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}</summary><div style="margin-top:8px;display:grid;gap:4px;"><div><strong>完整摘要：</strong>${escapeHtml(t.summary || '(空白摘要)')}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>傳票：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>科目：</strong>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div></div></details>`).join('')}`;
+  el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（顯示前 ${limit} 筆）</span>` : ''}</p>${show.map((t, idx) => {
+    const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+    const normSameAsRaw = (t.summaryNormalized || '') === (t.rawSummary || '');
+    const normDisplay = normSameAsRaw ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
+    const groupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
+    return `<details class="card" style="margin:6px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}</summary><div style="margin-top:8px;display:grid;gap:4px;font-size:13px;"><div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div><div><strong>正規化摘要：</strong>${normDisplay}</div><div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div><div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div><div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div><div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || t.summaryNormalized || t.rawSummary || '（無）')}</div><div><strong>分組來源：</strong>${escapeHtml(groupSrc)}</div><div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>科目：</strong>${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''} <span class="muted" style="font-size:11px;">[${escapeHtml(t.accountCode)}]</span></div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div><div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div></div></details>`;
+  }).join('')}`;
 }
 
 function _ovSortRows(rows) {
@@ -627,8 +633,8 @@ function renderOverviewTable(rows) {
       <td style="color:#9bb2cc;font-size:12px;">${start + i + 1}</td>
       <td class="col-date">${escapeHtml(t.dateROC)}</td>
       <td class="col-voucher">${escapeHtml(t.voucherNo)}</td>
-      <td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''}</td>
-      <td class="col-summary">${escapeHtml(t.summary || '(空白摘要)')}</td>
+      <td>${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td>
+      <td class="col-summary">${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}${t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : ''}</td>
       <td class="col-amount">${fmtSigned(getSignedAmount(t))}</td>
       <td class="col-amount">${fmtAmount(t.balance)}</td>
     </tr>`).join('')}
@@ -714,6 +720,10 @@ function renderWorkbench() {
         <div class="muted">被排除列 <button id="goExclusionBtn" style="font-size:11px;padding:2px 6px;margin-left:4px;">查看</button></div>
       </div>
       <div class="card" style="padding:10px;text-align:center;">
+        <div style="font-size:24px;font-weight:700;color:var(--ink2);">${txns.filter((t) => t.hasMultiSummaryInVoucher).length}</div>
+        <div class="muted">多摘要傳票分錄 <button id="goF4FromWorkbench" style="font-size:11px;padding:2px 6px;margin-left:4px;">查看異常</button></div>
+      </div>
+      <div class="card" style="padding:10px;text-align:center;">
         <div style="font-size:24px;font-weight:700;color:var(--ink);">${Object.keys(ungrouped).length}</div>
         <div class="muted">未分組摘要</div>
       </div>
@@ -732,8 +742,9 @@ function renderWorkbench() {
       <div>
         <div class="list-title" style="margin-top:0;">孤筆摘要 Top 20</div>
         ${singletons.length ? `<ul style="margin:4px 0 0;padding-left:16px;font-size:12px;">${singletons.map(([k]) => `<li>${escapeHtml(k)}</li>`).join('')}</ul>` : '<div class="muted" style="font-size:12px;margin-top:4px;">（無孤筆）</div>'}
-        <div style="margin-top:12px;">
+        <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px;">
           <button id="goF1FromWorkbench" class="primary">前往摘要分組 →</button>
+          <button id="goF15FromWorkbench">查看孤筆</button>
         </div>
       </div>
     </div>
@@ -746,6 +757,12 @@ function renderWorkbench() {
     document.querySelector('[data-module="f1"]')?.click();
     setTimeout(() => { dom.f1TabExclusion?.click(); }, 100);
   });
+  document.getElementById('goF15FromWorkbench')?.addEventListener('click', () => {
+    document.querySelector('[data-module="f15"]')?.click();
+  });
+  document.getElementById('goF4FromWorkbench')?.addEventListener('click', () => {
+    document.querySelector('[data-module="f4"]')?.click();
+  });
 }
 
 function renderExclusionViewer() {
@@ -756,9 +773,9 @@ function renderExclusionViewer() {
     el.innerHTML = '<p class="muted">無排除記錄。</p>';
     return;
   }
-  const whitelist = loadWhitelist();
+  const map = AppState.meta.columnMap || {};
   el.innerHTML = `
-    <div class="muted" style="margin-bottom:8px;">共 ${rows.length} 列被排除。點「加入白名單」可避免下次誤排；「恢復顯示」暫時將此列加回明細。</div>
+    <div class="muted" style="margin-bottom:8px;">共 ${rows.length} 列被排除。點「加入白名單」可避免下次誤排；「恢復此列」暫時將此列加回明細並重新分組。</div>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -766,14 +783,15 @@ function renderExclusionViewer() {
         </tr></thead>
         <tbody>
           ${rows.map((r, i) => `
-            <tr style="${r.whitelisted ? 'opacity:0.5;' : ''}">
+            <tr style="${r.whitelisted || r.restored ? 'opacity:0.5;' : ''}">
               <td>${r.rowIndex + 1}</td>
               <td><span class="pill">${escapeHtml(r.rowType)}</span></td>
               <td>${escapeHtml(r.reason)}</td>
               <td style="font-size:12px;max-width:300px;word-break:break-word;">${r.rawContent.filter(Boolean).slice(0, 5).map(escapeHtml).join(' | ')}</td>
               <td style="white-space:nowrap;">
-                ${r.recoverable && !r.whitelisted ? `<button data-excl-whitelist="${i}" style="font-size:11px;padding:2px 6px;">加入白名單</button>` : ''}
-                ${r.whitelisted ? '<span class="ok">已白名單</span>' : ''}
+                ${r.recoverable && !r.whitelisted && !r.restored ? `<button data-excl-whitelist="${i}" style="font-size:11px;padding:2px 6px;">加入白名單</button>` : ''}
+                ${!r.restored ? `<button data-excl-restore="${i}" style="font-size:11px;padding:2px 6px;margin-left:4px;" ${r.restored ? 'disabled' : ''}>恢復此列</button>` : '<span class="ok" style="font-size:11px;">已恢復</span>'}
+                ${r.whitelisted ? ' <span class="ok" style="font-size:11px;">已白名單</span>' : ''}
               </td>
             </tr>
           `).join('')}
@@ -782,16 +800,47 @@ function renderExclusionViewer() {
     </div>
   `;
   el.addEventListener('click', (e) => {
-    const idx = e.target?.dataset?.exclWhitelist;
-    if (idx == null) return;
-    const row = rows[parseInt(idx)];
-    if (!row) return;
-    row.whitelisted = true;
-    const wl = loadWhitelist();
-    wl.push(row.rawContent.filter(Boolean).join('|'));
-    saveWhitelist(wl);
-    renderExclusionViewer();
-    toast('已加入白名單');
+    const wlIdx = e.target?.dataset?.exclWhitelist;
+    if (wlIdx != null) {
+      const row = rows[parseInt(wlIdx)];
+      if (!row) return;
+      row.whitelisted = true;
+      const wl = loadWhitelist();
+      wl.push(row.rawContent.filter(Boolean).join('|'));
+      saveWhitelist(wl);
+      renderExclusionViewer();
+      toast('已加入白名單');
+      return;
+    }
+    const restIdx = e.target?.dataset?.exclRestore;
+    if (restIdx != null) {
+      const row = rows[parseInt(restIdx)];
+      if (!row || row.restored) return;
+      row.restored = true;
+      const rc = row.rawContent || [];
+      const vNo = (map.voucherNo >= 0 ? rc[map.voucherNo] : '') || rc[1] || '';
+      const joined = rc.filter(Boolean).join(' | ');
+      const restoredTxn = {
+        id: 'restored-' + Math.random().toString(36).slice(2),
+        restored: true,
+        accountCode: '', accountName: '（恢復列）',
+        accountNormalSide: '',
+        voucherNo: vNo,
+        date: new Date(), dateISO: '', dateROC: rc[0] || '',
+        periodROC: '',
+        rawSummary: joined,
+        summary: joined,
+        summaryNormalized: joined,
+        debit: 0, credit: 0, balance: 0,
+        defaultGroupName: '', keywordGroupName: '', manualGroupName: '',
+        effectiveGroupName: '（恢復列）',
+        hasMultiSummaryInVoucher: false,
+      };
+      AppState.transactions.push(restoredTxn);
+      renderBase();
+      renderExclusionViewer();
+      toast('已恢復 1 列，請重新分組');
+    }
   });
 }
 
@@ -938,7 +987,9 @@ function bestSummarySimilarityPct(txMap, leftIds, rightIds) {
   const right = (rightIds || []).map((id) => txMap.get(id)).filter(Boolean);
   left.forEach((a) => {
     right.forEach((b) => {
-      const s = jaccard(a.summary, b.summary) * 100;
+      const sa = a.summaryNormalized || a.summary;
+      const sb = b.summaryNormalized || b.summary;
+      const s = jaccard(sa, sb) * 100;
       if (s > best) best = s;
     });
   });
@@ -1133,7 +1184,8 @@ function renderF2UnmatchedEditor(rows) {
       const ageDays = hasRef && t.date instanceof Date ? daysBetween(t.date, refDateF2) : null;
       const ageText = ageDays !== null ? String(ageDays) : '—';
       const ageStyle = ageDays !== null && ageDays > 90 ? 'color:#cf1322;font-weight:600;' : ageDays > 30 ? 'color:#d46b08;' : 'color:#5f7692;';
-      return `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td style="${ageStyle}">${ageText}</td><td>${escapeHtml(t.voucherNo)}</td><td>[${escapeHtml(t.accountCode)}] ${escapeHtml(t.accountName)}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`;
+      const multiPillF2 = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+      return `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td style="${ageStyle}">${ageText}</td><td>${escapeHtml(t.voucherNo)}</td><td>${escapeHtml(t.accountName)} <span class="muted" style="font-size:11px;">[${escapeHtml(t.accountCode)}]</span></td><td>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}${multiPillF2}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`;
     }).join('')}
     </tbody></table></div>`;
 }
@@ -1354,8 +1406,24 @@ function renderF1Output() {
     const mode = rule.mode || 'A';
     const th = Number.isFinite(Number(rule.threshold)) ? Number(rule.threshold) : 70;
 
+    // Determine group source badge from transactions
+    const manualCount = txns.filter((t) => t.manualGroupName).length;
+    const kwCount = txns.filter((t) => t.keywordGroupName).length;
+    let srcBadge;
+    if (manualCount > 0 && manualCount === txns.length) {
+      srcBadge = '<span class="pill" style="font-size:11px;background:#f6ffed;color:#237804;border-color:#b7eb8f;">手動</span>';
+    } else if (kwCount > txns.length / 2) {
+      srcBadge = '<span class="pill" style="font-size:11px;background:#e6f7ff;color:#0050b3;border-color:#91d5ff;">關鍵字</span>';
+    } else {
+      srcBadge = '<span class="pill" style="font-size:11px;background:#f0f0f0;color:#595959;border-color:#d9d9d9;">預設規則</span>';
+    }
+    const hasMulti = txns.some((t) => t.hasMultiSummaryInVoucher);
+    const multiWarning = hasMulti ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要傳票</span>' : '';
+    // Use effectiveGroupName as display header (fallback to g.name)
+    const effectiveName = txns.length > 0 ? (txns[0].effectiveGroupName || g.name) : g.name;
+
     return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
-      <summary style="cursor:pointer;"><strong>群組：</strong><input data-f1-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" />｜筆數 ${txns.length}｜群組簽帳合計 ${fmtSigned(sumSigned)} <button data-f1-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
+      <summary style="cursor:pointer;"><strong>群組：</strong><input data-f1-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" /> ${srcBadge}${multiWarning}｜有效名稱：<em style="color:#0050b3;">${escapeHtml(effectiveName)}</em>｜筆數 ${txns.length}｜群組簽帳合計 ${fmtSigned(sumSigned)} <button data-f1-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
       <div style="margin-top:8px;"><button data-f1-back="1">回到分組摘要</button></div>
 
       <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
@@ -1382,9 +1450,34 @@ function renderF1Output() {
         <button data-f1-batch-move="${g.id}">批次移動</button>
         <button data-f1-batch-del="${g.id}">批次刪除</button>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>傳票號碼</th><th>摘要</th><th class="col-amount">簽帳金額</th><th class="col-amount">餘額</th><th>操作</th></tr></thead><tbody>
-      ${txns.map((t) => `<tr><td><input type="checkbox" data-f1-pick="${t.id}" data-f1-from="${g.id}" /> ${escapeHtml(t.voucherNo || '')}</td><td>${escapeHtml(t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td><td class="col-amount">${fmtAmount(t.balance)}</td><td><select data-f1-target="${t.id}"><option value="">移動到...</option>${groupOptions}</select> <button data-f1-move="${t.id}" data-f1-from="${g.id}">移動</button> <button data-f1-del="${t.id}" data-f1-from="${g.id}">刪除</button></td></tr>`).join('')}
-      </tbody></table></div>
+      <div style="margin-top:8px;">
+      ${txns.map((t) => {
+        const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+        const normSame = (t.summaryNormalized || '') === (t.rawSummary || '');
+        const normDisp = normSame ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
+        const tGroupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
+        return `<details style="border:1px solid var(--line);border-radius:8px;margin:4px 0;padding:4px 8px;background:#fafbfd;">
+          <summary style="cursor:pointer;list-style:none;font-size:13px;"><input type="checkbox" data-f1-pick="${t.id}" data-f1-from="${g.id}" style="margin-right:4px;" />${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo || '')}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}
+            <select data-f1-target="${t.id}" style="margin-left:6px;font-size:12px;"><option value="">移動到...</option>${groupOptions}</select>
+            <button data-f1-move="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">移動</button>
+            <button data-f1-del="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">刪除</button>
+          </summary>
+          <div style="margin-top:6px;display:grid;gap:3px;font-size:12px;padding-left:8px;">
+            <div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div>
+            <div><strong>正規化摘要：</strong>${normDisp}</div>
+            <div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div>
+            <div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div>
+            <div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div>
+            <div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || '（無）')}</div>
+            <div><strong>分組來源：</strong>${escapeHtml(tGroupSrc)}</div>
+            <div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div>
+            <div><strong>日期：</strong>${escapeHtml(t.dateROC)}</div>
+            <div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div>
+            <div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div>
+          </div>
+        </details>`;
+      }).join('')}
+      </div>
     </details>`;
   }).join('');
   dom.f1Result.innerHTML = `<p class="muted">群組數 ${AppState.grouping.groups.length}｜未分組 ${AppState.grouping.ungrouped.length}</p>${cards || '<p class="muted">目前無群組。</p>'}`;
@@ -1549,7 +1642,7 @@ function runF2() {
     credits.forEach((c) => {
       if (used.has(c.id)) return;
       if (!absDeltaWithin(d.debit, c.credit, tol)) return;
-      const s = jaccard(d.summary, c.summary);
+      const s = jaccard(d.summaryNormalized || d.summary, c.summaryNormalized || c.summary);
       if (s > score) { score = s; best = c; }
     });
     if (!best) return;
@@ -3700,12 +3793,18 @@ function bindEvents() {
     const rule = { id: Math.random().toString(36).slice(2), name, enabled: true, keywords, excludeWords, targetGroup, priority, matchMode: 'contains-any' };
     AppState.grouping.keywordRules.push(rule);
     saveKeywordRules(AppState.grouping.keywordRules);
+    // Recompute keywordGroupName and effectiveGroupName for all existing transactions
+    for (const t of AppState.transactions) {
+      t.keywordGroupName = applyKeywordRules(t.summaryNormalized, AppState.grouping.keywordRules) || '';
+      t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+    }
     renderKeywordRuleList();
+    renderWorkbench();
     if (dom.kwRuleName) dom.kwRuleName.value = '';
     if (dom.kwRuleKeywords) dom.kwRuleKeywords.value = '';
     if (dom.kwRuleExclude) dom.kwRuleExclude.value = '';
     if (dom.kwRuleTarget) dom.kwRuleTarget.value = '';
-    toast('規則已新增，重新套用分組後生效');
+    toast('規則已新增，分組已即時更新');
   });
 }
 

@@ -100,6 +100,7 @@ const dom = {
   navButtons: Array.from(document.querySelectorAll('.nav button[data-module]')), modules: Array.from(document.querySelectorAll('.module')),
   overviewList: document.getElementById('overviewList'), crossFileResult: document.getElementById('crossFileResult'), clearLocalBtn: document.getElementById('clearLocalBtn'), runF1Btn: document.getElementById('runF1Btn'), applyF1Btn: document.getElementById('applyF1Btn'),
   f1NewGroupName: document.getElementById('f1NewGroupName'), f1AddGroupBtn: document.getElementById('f1AddGroupBtn'), exportF1Btn: document.getElementById('exportF1Btn'),
+  exportF1GroupBtn: document.getElementById('exportF1GroupBtn'),
   copyF1TextBtn: document.getElementById('copyF1TextBtn'), f1CopyOutput: document.getElementById('f1CopyOutput'),
   f1Result: document.getElementById('f1Result'), f1List: document.getElementById('f1List'), runF2Btn: document.getElementById('runF2Btn'),
   exportF2Btn: document.getElementById('exportF2Btn'), copyF2TextBtn: document.getElementById('copyF2TextBtn'), f2ManualMatchBtn: document.getElementById('f2ManualMatchBtn'), f2ResetManualBtn: document.getElementById('f2ResetManualBtn'),
@@ -114,6 +115,7 @@ const dom = {
   f6From: document.getElementById('f6From'), f6To: document.getElementById('f6To'), runF6Btn: document.getElementById('runF6Btn'),
   f6Result: document.getElementById('f6Result'), f6List: document.getElementById('f6List'), runF14Btn: document.getElementById('runF14Btn'),
   exportF14Btn: document.getElementById('exportF14Btn'), f14Result: document.getElementById('f14Result'), f14List: document.getElementById('f14List'),
+  f14ModeBtn: document.getElementById('f14ModeBtn'),
   f18Keyword: document.getElementById('f18Keyword'), f18Threshold: document.getElementById('f18Threshold'), runF18Btn: document.getElementById('runF18Btn'),
   copyF18TextBtn: document.getElementById('copyF18TextBtn'), exportF18Btn: document.getElementById('exportF18Btn'), f18Result: document.getElementById('f18Result'), f18List: document.getElementById('f18List'),
   runF7Btn: document.getElementById('runF7Btn'), exportF7Btn: document.getElementById('exportF7Btn'), f7Result: document.getElementById('f7Result'),
@@ -2478,71 +2480,130 @@ function runF6() {
 }
 
 function runF14() {
-  const rows = getFilteredTransactions(); const map = new Map();
-  rows.forEach((t) => { const amount = t.debit > 0 ? t.debit : t.credit; const k = `${t.accountCode}||${t.voucherNo}||${decKey(amount)}`; if (!map.has(k)) map.set(k, []); map.get(k).push(t); });
-  const results = [];
-  map.forEach((items) => {
-    if (items.length >= 2 && new Set(items.map((x) => x.dateISO)).size >= 2) {
-      const totalDebit = items.reduce((s, t) => s + (t.debit || 0), 0);
-      const totalCredit = items.reduce((s, t) => s + (t.credit || 0), 0);
-      const hasMultiSummary = items.some((e) => e.hasMultiSummaryInVoucher);
-      const balanceOk = Math.abs(totalDebit - totalCredit) < 0.01;
-      results.push({
-        id: Math.random().toString(36).slice(2, 10),
-        voucherNo: items[0].voucherNo,
-        accountCode: items[0].accountCode,
-        accountName: items[0].accountName,
-        entries: items,
-        transactions: items,
-        totalDebit,
-        totalCredit,
-        hasMultiSummary,
-        status: balanceOk ? '借貸平衡' : '借貸不平衡',
-        severity: 'WARN',
-      });
+  const txns = getFilteredTransactions();
+  if (!txns.length) return toast('請先上傳資料', 'WARN');
+
+  let results = [];
+
+  if (!_f14CrossAccount) {
+    // Same-account mode: group by accountCode + voucherNo (existing behavior, relaxed to count>1)
+    const groupMap = new Map();
+    for (const t of txns) {
+      const key = `${t.accountCode}||${t.voucherNo}`;
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(t);
     }
-  });
-  AppState.dupVoucher.results = results;
-  const hit = new Set(results.flatMap((r) => r.entries.map((e) => e.id))); const remain = rows.filter((r) => !hit.has(r.id));
-  if (!results.length) {
-    dom.f14Result.innerHTML = '<div class="info-box ok">✓ 未發現此類問題。</div>';
+    results = Array.from(groupMap.entries())
+      .filter(([, items]) => items.length > 1)
+      .map(([, items]) => {
+        const totalDebit = items.reduce((s, t) => s + (t.debit || 0), 0);
+        const totalCredit = items.reduce((s, t) => s + (t.credit || 0), 0);
+        const hasMulti = items.some(t => t.hasMultiSummaryInVoucher);
+        return {
+          voucherNo: items[0].voucherNo,
+          accountCode: items[0].accountCode,
+          accountName: items[0].accountName,
+          count: items.length,
+          totalDebit, totalCredit,
+          status: Math.abs(totalDebit - totalCredit) < 0.01 ? '借貸平衡' : '借貸不平衡',
+          hasMultiSummary: hasMulti,
+          crossAccount: false,
+          accountCount: 1,
+          transactions: items,
+        };
+      });
   } else {
-    const groupsHtml = results.map((r) => {
-      const hasMulti = r.hasMultiSummary;
-      const multiTag = hasMulti ? ' <span class="badge-multi-summary">多摘要</span>' : '';
-      const statusStyle = r.status === '借貸平衡' ? 'color:var(--ok);' : 'color:var(--danger);font-weight:600;';
-      const detailRows = r.entries.map((t) => {
-        const normDiff = t.summaryNormalized !== t.rawSummary;
-        const hasDiffSummary = new Set(r.entries.map((e) => e.rawSummary || e.summary)).size > 1;
-        const rowStyle = hasDiffSummary && (t.rawSummary || t.summary) !== (r.entries[0].rawSummary || r.entries[0].summary) ? 'background:#fff8e6;' : '';
-        return `<tr style="${rowStyle}">
-          <td>${escapeHtml(t.dateROC)}</td>
-          <td>${escapeHtml(t.voucherNo)}</td>
-          <td>${escapeHtml(t.accountName)} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td>
-          <td>${escapeHtml(t.rawSummary || t.summary || '—')}</td>
-          <td class="muted">${normDiff ? escapeHtml(t.summaryNormalized) : '—'}</td>
-          <td class="col-amount">${t.debit ? fmtAmount(t.debit) : '—'}</td>
-          <td class="col-amount">${t.credit ? fmtAmount(t.credit) : '—'}</td>
-          <td>${t.hasMultiSummaryInVoucher ? '<span class="badge-multi-summary">多摘要</span>' : ''}</td>
-        </tr>`;
-      }).join('');
-      return `<details class="txn-detail" style="margin:4px 0;">
-        <summary>
-          傳票 ${escapeHtml(r.voucherNo)} — ${r.entries.length} 筆${multiTag}
-          <span class="muted" style="font-size:11px;margin-left:8px;">借方合計 ${fmtAmount(r.totalDebit)} / 貸方合計 ${fmtAmount(r.totalCredit)}</span>
-          <span style="${statusStyle}font-size:11px;margin-left:8px;">${escapeHtml(r.status)}</span>
-          <span class="muted" style="font-size:11px;margin-left:8px;">${escapeHtml(r.accountName)}(${escapeHtml(r.accountCode)})</span>
-        </summary>
-        <div class="table-wrap" style="margin-top:4px;">
-          <table style="min-width:700px;">
-            <thead><tr><th>日期</th><th>傳票</th><th>科目</th><th>原始摘要</th><th>正規化摘要</th><th>借方</th><th>貸方</th><th>旗標</th></tr></thead>
-            <tbody>${detailRows}</tbody>
-          </table>
-        </div>
-      </details>`;
-    }).join('');
-    dom.f14Result.innerHTML = `<p class="muted">發現 ${results.length} 組重複傳票（展開查看明細）：</p>${groupsHtml}`;
+    // Cross-account mode: group by voucherNo only
+    const voucherMap = new Map();
+    for (const t of txns) {
+      if (!voucherMap.has(t.voucherNo)) voucherMap.set(t.voucherNo, []);
+      voucherMap.get(t.voucherNo).push(t);
+    }
+    results = Array.from(voucherMap.entries())
+      .filter(([, items]) => {
+        const distinctAccounts = new Set(items.map(t => t.accountCode));
+        return distinctAccounts.size > 1;
+      })
+      .map(([voucherNo, items]) => {
+        const distinctAccounts = new Set(items.map(t => t.accountCode));
+        const accountList = Array.from(distinctAccounts).map(code => {
+          const t = items.find(t => t.accountCode === code);
+          return `[${code}] ${t?.accountName || ''}`;
+        }).join('、');
+        const totalDebit = items.reduce((s, t) => s + (t.debit || 0), 0);
+        const totalCredit = items.reduce((s, t) => s + (t.credit || 0), 0);
+        const hasMulti = items.some(t => t.hasMultiSummaryInVoucher);
+        const summarySet = new Set(items.map(t => t.rawSummary || t.summary));
+        return {
+          voucherNo,
+          accountCode: Array.from(distinctAccounts).join(', '),
+          accountName: accountList,
+          count: items.length,
+          accountCount: distinctAccounts.size,
+          totalDebit, totalCredit,
+          status: Math.abs(totalDebit - totalCredit) < 0.01 ? '借貸平衡' : '借貸不平衡',
+          hasMultiSummary: hasMulti || summarySet.size > 1,
+          crossAccount: true,
+          transactions: items,
+        };
+      });
   }
+
+  AppState.dupVoucher.results = results;
+
+  if (!results.length) {
+    dom.f14Result.innerHTML = `<div class="info-box ok">✓ 未發現${_f14CrossAccount ? '跨科目' : '同科目'}重複傳票。</div>`;
+    renderTxnList(dom.f14List, txns, `未命中重複傳票 ${txns.length} 筆`);
+    return;
+  }
+
+  const modeLabel = _f14CrossAccount ? '跨科目' : '同科目';
+
+  const resultHtml = results.map(r => {
+    const hasDiffSummary = new Set(r.transactions.map(t => t.rawSummary || t.summary)).size > 1;
+    const firstSummary = r.transactions[0]?.rawSummary || r.transactions[0]?.summary || '';
+
+    const detailRows = r.transactions.map(t => {
+      const summaryDiff = (t.rawSummary || t.summary) !== firstSummary;
+      const normDiff = t.summaryNormalized && t.summaryNormalized !== (t.rawSummary || t.summary);
+      return `<tr style="${summaryDiff ? 'background:#fff8e6;' : ''}">
+        <td>${escapeHtml(t.dateROC)}</td>
+        <td>${escapeHtml(t.voucherNo)}</td>
+        <td>${escapeHtml(t.accountName)} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td>
+        <td>${escapeHtml(t.rawSummary || t.summary || '—')}</td>
+        <td class="muted">${normDiff ? escapeHtml(t.summaryNormalized) : '—'}</td>
+        <td class="col-amount">${fmtAmount(t.debit)}</td>
+        <td class="col-amount">${fmtAmount(t.credit)}</td>
+        <td>${t.hasMultiSummaryInVoucher || summaryDiff ? '<span class="badge-multi-summary">多摘要</span>' : ''}${t.restored ? '<span class="badge-restored">恢復列</span>' : ''}${t.whitelistSaved ? '<span class="badge-whitelist">白名單</span>' : ''}</td>
+      </tr>`;
+    }).join('');
+
+    const summaryLine = r.crossAccount
+      ? `傳票 ${escapeHtml(r.voucherNo)} — 跨 ${r.accountCount} 科目，共 ${r.count} 筆`
+      : `傳票 ${escapeHtml(r.voucherNo)} [${escapeHtml(r.accountCode)}] — ${r.count} 筆`;
+
+    return `<details class="txn-detail" style="margin:4px 0;">
+      <summary>
+        ${summaryLine}
+        ${r.hasMultiSummary || hasDiffSummary ? '<span class="badge-multi-summary">多摘要</span>' : ''}
+        <span class="pill" style="font-size:11px;${r.status==='借貸不平衡'?'background:#fff1f0;color:#cf1322;border-color:#ffa39e;':'background:#f6ffed;color:#237804;border-color:#b7eb8f;'}">${escapeHtml(r.status)}</span>
+        ${r.crossAccount ? `<span class="pill" style="font-size:11px;background:#f0f5ff;color:#2f54eb;">跨${r.accountCount}科目</span>` : ''}
+        <span class="muted" style="font-size:11px;">借 ${fmtAmount(r.totalDebit)} / 貸 ${fmtAmount(r.totalCredit)}</span>
+      </summary>
+      ${r.crossAccount ? `<div class="muted" style="font-size:12px;padding:4px 8px;">涉及科目：${escapeHtml(r.accountName)}</div>` : ''}
+      <div class="table-wrap" style="margin-top:4px;">
+        <table style="min-width:700px;">
+          <thead><tr><th>日期</th><th>傳票</th><th>科目</th><th>原始摘要</th><th>正規化摘要</th><th class="col-amount">借方</th><th class="col-amount">貸方</th><th>旗標</th></tr></thead>
+          <tbody>${detailRows}</tbody>
+        </table>
+      </div>
+    </details>`;
+  }).join('');
+
+  dom.f14Result.innerHTML = `<div class="info-box warn" style="margin-bottom:8px;">發現 ${results.length} 個${modeLabel}重複傳票（共涉及 ${results.reduce((s, r) => s + r.count, 0)} 筆分錄）</div>${resultHtml}`;
+
+  const dupIds = new Set(results.flatMap(r => r.transactions.map(t => t.id)));
+  const remain = txns.filter(t => !dupIds.has(t.id));
   renderTxnList(dom.f14List, remain, `未命中重複傳票 ${remain.length} 筆`);
 }
 
@@ -2966,6 +3027,9 @@ function runF13() {
 }
 // ---- end F13 ----
 
+// ---- F14 Cross-account mode ----
+let _f14CrossAccount = false;
+
 // ---- F15 摘要頻率分析 ----
 let _f15UseNormalized = false;
 
@@ -3184,6 +3248,11 @@ function bindEvents() {
   dom.runF5Btn.addEventListener('click', runF5);
   dom.runF6Btn.addEventListener('click', runF6);
   dom.runF14Btn.addEventListener('click', runF14);
+  dom.f14ModeBtn?.addEventListener('click', () => {
+    _f14CrossAccount = !_f14CrossAccount;
+    dom.f14ModeBtn.textContent = _f14CrossAccount ? '目前：跨科目模式' : '目前：同科目模式';
+    if (AppState.transactions.length) runF14();
+  });
   dom.runF18Btn.addEventListener('click', runF18);
   dom.copyF18TextBtn.addEventListener('click', () => copyText(AppState.trendAlert.copyText || '', '金額變動分組摘要已複製'));
 
@@ -4058,7 +4127,9 @@ function bindEvents() {
   dom.f18Threshold.addEventListener('input', autoF18);
 
   dom.exportF1Btn.addEventListener('click', () => {
-    const rows = AppState.transactions.map((t) => [
+    const txns = getFilteredTransactions();
+    if (!txns.length) return toast('無資料可匯出', 'WARN');
+    const rows = txns.map((t) => [
       t.effectiveGroupName || t.defaultGroupName || '',
       t.defaultGroupName || '',
       t.keywordGroupName || '',
@@ -4075,8 +4146,51 @@ function bindEvents() {
       t.whitelistSaved ? '是' : '',
       t.restored ? '是' : '',
     ]);
-    downloadCsv(`分組結果_${Date.now()}.csv`,
+    downloadCsv(`分組結果_逐筆_${Date.now()}.csv`,
       ['有效分組', '預設分組', '關鍵字分組', '手動分組', '傳票號碼', '日期', '科目代碼', '科目名稱', '原始摘要', '正規化摘要', '借方金額', '貸方金額', '多摘要傳票', '白名單保留', '已恢復'],
+      rows);
+  });
+
+  dom.exportF1GroupBtn?.addEventListener('click', () => {
+    const txns = getFilteredTransactions();
+    if (!txns.length) return toast('無資料可匯出', 'WARN');
+
+    const groupMap = new Map();
+    for (const t of txns) {
+      const key = t.effectiveGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary || '（未分組）';
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(t);
+    }
+
+    const rows = Array.from(groupMap.entries()).map(([groupName, items]) => {
+      const totalDebit = items.reduce((s, t) => s + (t.debit || 0), 0);
+      const totalCredit = items.reduce((s, t) => s + (t.credit || 0), 0);
+      const net = totalDebit - totalCredit;
+      const voucherCount = new Set(items.map(t => t.voucherNo)).size;
+      const defaultGN = items.map(t => t.defaultGroupName).filter(Boolean)[0] || '';
+      const kwGN = items.map(t => t.keywordGroupName).filter(Boolean)[0] || '';
+      const hasMulti = items.some(t => t.hasMultiSummaryInVoucher) ? '是' : '';
+      const hasWhitelist = items.some(t => t.whitelistSaved) ? '是' : '';
+      const hasRestored = items.some(t => t.restored) ? '是' : '';
+      const sampleSummaries = Array.from(new Set(items.map(t => t.rawSummary || t.summary).filter(Boolean))).slice(0, 3).join(' / ');
+      return [
+        groupName,
+        defaultGN,
+        kwGN,
+        items.length,
+        voucherCount,
+        fmtAmount(totalDebit),
+        fmtAmount(totalCredit),
+        fmtAmount(net),
+        hasMulti,
+        hasWhitelist,
+        hasRestored,
+        sampleSummaries,
+      ];
+    });
+
+    downloadCsv(`分組結果_逐組_${Date.now()}.csv`,
+      ['有效分組', '預設分組', '關鍵字分組', '筆數', '傳票數', '借方合計', '貸方合計', '淨額', '含多摘要傳票', '含白名單保留', '含恢復列', '代表摘要樣本'],
       rows);
   });
 
@@ -4123,9 +4237,11 @@ function bindEvents() {
     downloadCsv(`F4_${Date.now()}.csv`, ['規則', '嚴重度', '科目代碼', '命中分錄', '說明'], AppState.anomaly.results.map((r) => [r.rule, r.severity, r.accountCode, r.transactionIds.join('|'), r.description]));
   });
 
-  dom.exportF14Btn.addEventListener('click', () => {
+  dom.exportF14Btn?.addEventListener('click', () => {
+    const results = AppState.dupVoucher.results || [];
+    if (!results.length) return toast('尚無重複傳票結果', 'WARN');
     const csvRows = [];
-    for (const group of AppState.dupVoucher.results) {
+    for (const group of results) {
       for (const t of (group.transactions || group.entries || [])) {
         csvRows.push([
           t.voucherNo,
@@ -4137,13 +4253,16 @@ function bindEvents() {
           fmtAmount(t.debit),
           fmtAmount(t.credit),
           t.hasMultiSummaryInVoucher ? '是' : '',
-          group.status || group.severity || '',
+          group.crossAccount ? '是' : '',
+          group.accountCount || 1,
+          group.status || '',
+          t.restored ? '是' : '',
+          t.whitelistSaved ? '是' : '',
         ]);
       }
     }
-    if (!csvRows.length) return toast('尚無重複傳票結果', 'WARN');
     downloadCsv(`重複傳票_${Date.now()}.csv`,
-      ['傳票號碼', '日期', '科目代碼', '科目名稱', '原始摘要', '正規化摘要', '借方', '貸方', '多摘要傳票', '狀態'],
+      ['傳票號碼', '日期', '科目代碼', '科目名稱', '原始摘要', '正規化摘要', '借方', '貸方', '多摘要傳票', '跨科目', '涉及科目數', '借貸狀態', '已恢復', '白名單保留'],
       csvRows);
   });
 

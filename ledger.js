@@ -805,24 +805,24 @@ function renderWorkbench() {
 
   body.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:12px;">
-      <div class="card" style="padding:10px;text-align:center;">
+      <div class="stat-tile">
         <div style="font-size:24px;font-weight:700;color:var(--brand);">${txns.length}</div>
         <div class="muted">有效分錄</div>
         ${restoredNote}${wlNote}
       </div>
-      <div class="card" style="padding:10px;text-align:center;">
+      <div class="stat-tile">
         <div style="font-size:24px;font-weight:700;color:var(--warn);">${excluded.length}</div>
         <div class="muted">被排除列 <button id="goExclusionBtn" style="font-size:11px;padding:2px 6px;margin-left:4px;">查看</button></div>
       </div>
-      <div class="card" style="padding:10px;text-align:center;">
+      <div class="stat-tile">
         <div style="font-size:24px;font-weight:700;color:var(--ink2);">${txns.filter((t) => t.hasMultiSummaryInVoucher).length}</div>
         <div class="muted">多摘要傳票分錄 <button id="goF4FromWorkbench" style="font-size:11px;padding:2px 6px;margin-left:4px;">查看異常</button></div>
       </div>
-      <div class="card" style="padding:10px;text-align:center;">
+      <div class="stat-tile">
         <div style="font-size:24px;font-weight:700;color:var(--ink);">${Object.keys(ungrouped).length}</div>
         <div class="muted">未分組摘要</div>
       </div>
-      <div class="card" style="padding:10px;text-align:center;">
+      <div class="stat-tile">
         <div style="font-size:24px;font-weight:700;color:var(--ink2);">${singletons.length}</div>
         <div class="muted">孤筆摘要</div>
       </div>
@@ -1137,15 +1137,15 @@ function renderF1NormPanel() {
     <div class="panel-title">摘要正規化設定</div>
     <div class="panel-desc">調整哪些前綴、日期、代碼樣式會從摘要中移除。修改後按「套用並重算」立即生效。</div>
     <div class="grid" style="margin-bottom:10px;">
-      <label style="flex-direction:row;align-items:center;gap:8px;">
+      <label class="label-inline">
         <input type="checkbox" id="normRemoveSerial" ${s2.removeSerialPrefix ? 'checked' : ''} />
         移除前置序號（123. A001- 等）
       </label>
-      <label style="flex-direction:row;align-items:center;gap:8px;">
+      <label class="label-inline">
         <input type="checkbox" id="normRemoveDate" ${s2.removeDateSuffix ? 'checked' : ''} />
         移除尾端日期（114/01/15 等）
       </label>
-      <label style="flex-direction:row;align-items:center;gap:8px;">
+      <label class="label-inline">
         <input type="checkbox" id="normRemoveCode" ${s2.removeCodePatterns ? 'checked' : ''} />
         移除括號代碼（(AB-123) 等）
       </label>
@@ -1242,7 +1242,7 @@ function renderDataSummary() {
     { label: '關鍵字規則命中筆數', value: kwHitCount, style: 'color:var(--brand)' },
   ];
   body.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;">
-    ${items.map((i) => `<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;">
+    ${items.map((i) => `<div class="stat-tile" style="padding:8px 10px;">
       <div style="font-size:20px;font-weight:700;${i.style}">${i.value}</div>
       <div class="muted" style="font-size:12px;margin-top:2px;">${escapeHtml(i.label)}</div>
     </div>`).join('')}
@@ -1610,7 +1610,7 @@ function renderF2UnmatchedEditor(rows) {
       const ageDays = hasRef && t.date instanceof Date ? daysBetween(t.date, refDateF2) : null;
       const ageText = ageDays !== null ? String(ageDays) : '—';
       const ageStyle = ageDays !== null && ageDays > 90 ? 'color:#cf1322;font-weight:600;' : ageDays > 30 ? 'color:#d46b08;' : 'color:#5f7692;';
-      const multiPillF2 = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+      const multiPillF2 = t.hasMultiSummaryInVoucher ? ' <span class="badge-multi-summary">多摘要</span>' : '';
       const restoredPillF2 = t.restored ? ' <span class="badge-restored">恢復列</span>' : '';
       const wlPillF2 = t.whitelistSaved ? ' <span class="badge-whitelist">白名單</span>' : '';
       return `<tr id="f2-row-${t.id}"><td><input type="checkbox" data-f2-pick="${t.id}" /></td><td>${escapeHtml(t.dateROC)}</td><td style="${ageStyle}">${ageText}</td><td>${escapeHtml(t.voucherNo)}</td><td>${escapeHtml(t.accountName)} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td><td>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}${multiPillF2}${wlPillF2}${restoredPillF2}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`;
@@ -1880,7 +1880,7 @@ function renderF1Output() {
       </div>
       <div style="margin-top:8px;">
       ${txns.map((t) => {
-        const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+        const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="badge-multi-summary">多摘要</span>' : '';
         const normSame = (t.summaryNormalized || '') === (t.rawSummary || '');
         const normDisp = normSame ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
         const tGroupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
@@ -2473,7 +2473,7 @@ function runF6() {
   okPeriods.forEach((p) => (byPeriod.get(p)?.txnIds || []).forEach((id) => okIds.add(id)));
   const okRows = Array.from(okIds).map((id) => txMap.get(id)).filter(Boolean);
 
-  dom.f6Result.innerHTML = `<div class="table-wrap"><table><thead><tr><th>期間</th><th>預期</th><th>實際</th><th>狀態</th></tr></thead><tbody>${results.map((r) => `<tr><td>${r.period}</td><td>${r.expected}</td><td>${r.actual}</td><td>${r.status === 'ok' ? 'OK' : r.status === 'missing' ? 'MISSING' : 'EXCESS'}</td></tr>`).join('')}</tbody></table></div>${
+  dom.f6Result.innerHTML = `<div class="table-wrap"><table><thead><tr><th>期間</th><th class="col-amount">預期</th><th class="col-amount">實際</th><th>狀態</th></tr></thead><tbody>${results.map((r) => `<tr><td>${r.period}</td><td class="col-amount">${r.expected}</td><td class="col-amount">${r.actual}</td><td>${r.status === 'ok' ? 'OK' : r.status === 'missing' ? 'MISSING' : 'EXCESS'}</td></tr>`).join('')}</tbody></table></div>${
     suggestions.length ? `<p class="muted">偵測到週期性模式 ${escapeHtml(JSON.stringify(suggestions))}</p>` : ''
   }`;
   dom.f6List.innerHTML = `<div class="table-wrap"><table><thead><tr><th>傳票號碼</th><th>日期</th><th>摘要</th><th class="col-amount">金額</th></tr></thead><tbody>${okRows.map((t) => `<tr><td>${escapeHtml(t.voucherNo)}</td><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</td><td class="col-amount">${fmtSigned(getSignedAmount(t))}</td></tr>`).join('')}</tbody></table></div><p class="muted">時間斷層符合頻率 ${okRows.length} 筆｜關鍵字:${escapeHtml(autoKeyword || '(未指定)')}</p>`;
@@ -3108,7 +3108,7 @@ function runF15() {
   dom.f15Result.innerHTML = `
     <p class="muted">分組依據：<strong>${viewLabel}</strong> <em class="muted" style="font-size:11px;">${viewIndicator}</em>｜共 ${freq.size} 種不同摘要｜孤筆（出現1次）<strong class="warn">${singletons}</strong> 種｜篩選後 ${entries.length} 種（顯示前 ${show.length}）</p>
     <div class="toolbar" style="margin-bottom:8px;">
-      <button id="exportF15Btn" style="font-size:12px;padding:4px 10px;">匯出 CSV</button>
+      <button id="exportF15Btn" style="font-size:12px;padding:4px 10px;margin-left:auto;">匯出 CSV</button>
     </div>
     ${tableRows}`;
   document.getElementById('exportF15Btn')?.addEventListener('click', () => {

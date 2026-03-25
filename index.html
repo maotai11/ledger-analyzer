@@ -312,6 +312,20 @@
     /* ---- F15 view toggle ---- */
     .f15-toggle-btn { font-size: 12px; padding: 4px 10px; }
     .f15-toggle-btn.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+    /* Inline label for checkboxes */
+    .label-inline { flex-direction: row; align-items: center; gap: 8px; }
+
+    /* Small action buttons */
+    .btn-sm { font-size: 11px; padding: 2px 7px; border-radius: 4px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
+    .btn-sm-danger { font-size: 11px; padding: 2px 7px; border-radius: 4px; cursor: pointer; border: 1px solid var(--danger); color: var(--danger); background: #fff0f0; }
+    .btn-sm-danger:hover { background: var(--danger); color: #fff; }
+
+    /* Stat tile (lighter than .card, for nested use) */
+    .stat-tile { border: 1px solid var(--line2); border-radius: var(--radius); padding: 10px; background: #fff; text-align: center; }
+
+    /* Export button group */
+    .btn-export-group { display: flex; gap: 6px; margin-left: auto; }
   </style>
 </head>
 <body>
@@ -327,7 +341,7 @@
           <input id="fileInput" type="file" accept=".xlsx,.xls" style="display:none;" />
         </label>
         <button id="resetBtn">重新上傳</button>
-        <button id="clearLocalBtn" style="color:var(--danger);border-color:var(--danger);">清除本地資料</button>
+        <button id="clearLocalBtn" class="danger">清除本地資料</button>
       </div>
     </header>
 
@@ -410,8 +424,10 @@
               <button id="applyF1Btn">套用分組</button>
               <input id="f1NewGroupName" type="text" placeholder="新增分組名稱" style="min-width:180px;" />
               <button id="f1AddGroupBtn">新增分組</button>
-              <button id="exportF1Btn">匯出逐筆版</button>
-              <button id="exportF1GroupBtn">匯出逐組版</button>
+              <span class="btn-export-group">
+                <button id="exportF1Btn">匯出逐筆版</button>
+                <button id="exportF1GroupBtn">匯出逐組版</button>
+              </span>
               <button id="copyF1TextBtn">複製分組摘要</button>
               <button id="mergeF1Btn">合併同名群組</button>
               <button id="sortF1Btn">依名稱排序</button>
@@ -577,14 +593,14 @@
             <button id="runF7Btn" class="primary">產生試算表</button>
             <button id="exportF7Btn">匯出 CSV</button>
           </div>
-          <div id="f7Result" style="margin-top:10px;"></div>
+          <div id="f7Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行試算表」。</div></div>
         </section>
 
         <section class="card module" id="module-f9">
           <h3>科目備忘與索取清單</h3>
           <p class="muted" style="margin-top:0;">針對各科目書寫備忘、設定期望分錄規則，掃描缺少的費用帳，並輸出索取清單給客戶。</p>
 
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
+          <div class="dual-col" style="margin-top:10px;">
             <div class="card">
               <strong>科目備忘錄</strong>
               <label style="margin-top:8px;">選擇科目
@@ -681,7 +697,7 @@
           <div class="toolbar">
             <button id="runF10Btn" class="primary">驗算傳票平衡</button>
           </div>
-          <div id="f10Result" style="margin-top:10px;"></div>
+          <div id="f10Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行」。</div></div>
         </section>
 
         <section class="card module" id="module-f11">
@@ -700,7 +716,7 @@
           <div class="toolbar">
             <button id="runF11Btn" class="primary">產生矩陣</button>
           </div>
-          <div id="f11Result" style="margin-top:10px;overflow-x:auto;"></div>
+          <div id="f11Result" style="margin-top:10px;overflow-x:auto;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行矩陣」。</div></div>
         </section>
 
         <section class="card module" id="module-f13">
@@ -720,7 +736,7 @@
           <div class="toolbar">
             <button id="runF13Btn" class="primary">檢視走勢</button>
           </div>
-          <div id="f13Result" style="margin-top:10px;"></div>
+          <div id="f13Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行」。</div></div>
         </section>
 
         <section class="card module" id="module-f15">
@@ -745,7 +761,7 @@
             <button id="runF15Btn" class="primary">分析頻率</button>
             <button id="f15ViewToggle" class="f15-toggle-btn" title="切換顯示原始摘要或正規化摘要">原始 / 正規化</button>
           </div>
-          <div id="f15Result" style="margin-top:10px;"></div>
+          <div id="f15Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行分析」。</div></div>
         </section>
       </main>
     </div>

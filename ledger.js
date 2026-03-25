@@ -377,7 +377,7 @@ function f6PeriodKeysFromTxn(txn, frequency) {
   return Array.from(new Set(keys));
 }
 function emptyGroupingState() {
-  return { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '' };
+  return { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '', keywordRules: [] };
 }
 function cloneGroupingState(s) {
   return {
@@ -393,13 +393,17 @@ function cloneGroupingState(s) {
     draftRenameMap: { ...(s?.draftRenameMap || {}) },
     draftExtraGroups: [...(s?.draftExtraGroups || [])],
     copyText: s?.copyText || '',
+    keywordRules: [...(s?.keywordRules || [])],
   };
 }
 function currentGroupingKey() { return dom.accountSelect.value || 'all'; }
 function saveCurrentGroupingState() { AppState.groupingStore[AppState.activeGroupingKey || 'all'] = cloneGroupingState(AppState.grouping); }
 function loadGroupingState(key) {
+  const kwRules = AppState.grouping.keywordRules || [];
   const useKey = key || 'all';
   AppState.grouping = AppState.groupingStore[useKey] ? cloneGroupingState(AppState.groupingStore[useKey]) : emptyGroupingState();
+  // keywordRules is global — preserve across account switches
+  if (!AppState.grouping.keywordRules.length) AppState.grouping.keywordRules = kwRules;
   AppState.activeGroupingKey = useKey;
 }
 

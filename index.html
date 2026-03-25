@@ -230,6 +230,88 @@
       .nav button { display: inline-flex; width: auto; margin-right: 4px; }
       .nav-section { display: none; }
     }
+
+    /* ---- Settings panels (consistent structure for all setting panels) ---- */
+    .settings-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: #f8fafd;
+      margin: 8px 0;
+    }
+    .settings-panel .panel-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .settings-panel .panel-desc {
+      font-size: 12px;
+      color: var(--ink2);
+      margin-bottom: 12px;
+    }
+    .settings-panel .panel-footer {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* ---- Info / warning / success inline boxes ---- */
+    .info-box {
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin: 6px 0;
+    }
+    .info-box.info { background: #e6f4ff; border-left: 3px solid var(--brand); }
+    .info-box.warn { background: #fffbe6; border-left: 3px solid var(--warn); }
+    .info-box.ok   { background: #f6ffed; border-left: 3px solid var(--ok); }
+    .info-box.danger { background: #fff1f0; border-left: 3px solid var(--danger); }
+
+    /* ---- Dual view layout ---- */
+    .dual-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 900px) { .dual-col { grid-template-columns: 1fr; } }
+
+    /* ---- Active nav improvement ---- */
+    .nav button.active {
+      border-left: 3px solid var(--brand);
+      padding-left: 7px;
+    }
+
+    /* ---- Restored / whitelist badges ---- */
+    .badge-restored { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: #f0f5ff; color: #2f54eb; border: 1px solid #adc6ff; margin-left: 4px; vertical-align: middle; }
+    .badge-whitelist { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: #f6ffed; color: #237804; border: 1px solid #b7eb8f; margin-left: 4px; vertical-align: middle; }
+    .badge-multi-summary { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; margin-left: 4px; vertical-align: middle; }
+
+    /* ---- Collapsible detail rows ---- */
+    details.txn-detail > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 5px 8px;
+      border-radius: 6px;
+      transition: background 0.1s;
+    }
+    details.txn-detail > summary:hover { background: var(--brand-dim); }
+    details.txn-detail > summary::-webkit-details-marker { display: none; }
+    details.txn-detail[open] > summary { background: #eef3ff; }
+    details.txn-detail .detail-body {
+      padding: 8px 10px;
+      background: #fafbfd;
+      border: 1px solid var(--line2);
+      border-radius: 0 0 8px 8px;
+      font-size: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 12px;
+    }
+    .detail-row { display: contents; }
+    .detail-label { color: var(--ink2); font-size: 12px; }
+    .detail-value { color: var(--ink); font-size: 12px; word-break: break-word; }
+
+    /* ---- F15 view toggle ---- */
+    .f15-toggle-btn { font-size: 12px; padding: 4px 10px; }
+    .f15-toggle-btn.active { background: var(--brand); color: #fff; border-color: var(--brand); }
   </style>
 </head>
 <body>
@@ -252,25 +334,25 @@
     <div class="layout">
       <aside class="nav">
         <div class="nav-section">帳務概覽</div>
-        <button class="active" data-module="overview">📋 總覽</button>
-        <button data-module="f7">⚖️ 試算表</button>
+        <button class="active" data-module="overview" title="查看所有分錄明細與科目彙總">📋 總覽</button>
+        <button data-module="f7" title="科目期初/本期/期末餘額驗算">⚖️ 試算表</button>
         <div class="nav-section">核對分析</div>
-        <button data-module="f1">🗂 摘要分組</button>
-        <button data-module="f2">🔗 沖帳配對</button>
-        <button data-module="f3">🔢 數字池</button>
-        <button data-module="f5">🔍 跨科目連結</button>
+        <button data-module="f1" title="依摘要內容分組歸類，支援關鍵字規則">🗂 摘要分組</button>
+        <button data-module="f2" title="自動比對借貸方沖帳，找出未沖帳分錄">🔗 沖帳配對</button>
+        <button data-module="f3" title="搜尋加總等於目標金額的組合">🔢 數字池</button>
+        <button data-module="f5" title="依關鍵字或傳票追蹤跨科目分錄">🔍 跨科目連結</button>
         <div class="nav-section">偵測稽核</div>
-        <button data-module="f4">⚠️ 異常偵測</button>
-        <button data-module="f6">📅 時間斷層</button>
-        <button data-module="f14">📌 重複傳票</button>
-        <button data-module="f18">📈 金額變動</button>
+        <button data-module="f4" title="偵測週末入帳、月底集中、金額異常等">⚠️ 異常偵測</button>
+        <button data-module="f6" title="找出特定頻率分錄的缺失期間">📅 時間斷層</button>
+        <button data-module="f14" title="偵測相同傳票號碼的重複分錄">📌 重複傳票</button>
+        <button data-module="f18" title="追蹤同摘要金額跨月異動">📈 金額變動</button>
         <div class="nav-section">進階分析</div>
-        <button data-module="f10">🧾 傳票借貸驗算</button>
-        <button data-module="f11">📊 月份矩陣</button>
-        <button data-module="f13">📉 餘額走勢</button>
-        <button data-module="f15">🏷 摘要頻率</button>
+        <button data-module="f10" title="驗算每張傳票借貸是否平衡">🧾 傳票借貸驗算</button>
+        <button data-module="f11" title="科目 × 月份的金額彙總矩陣">📊 月份矩陣</button>
+        <button data-module="f13" title="逐筆追蹤餘額，找出跳掉點">📉 餘額走勢</button>
+        <button data-module="f15" title="統計各摘要出現次數，識別孤筆">🏷 摘要頻率</button>
         <div class="nav-section">備忘工具</div>
-        <button data-module="f9">📝 備忘索取</button>
+        <button data-module="f9" title="設定期望分錄規則，產出索取清單">📝 備忘索取</button>
       </aside>
 
       <main class="content">
@@ -330,8 +412,8 @@
               <button id="f1AutoSuggestBtn">自動規則建議</button>
               <button id="f1NormSettingsBtn">正規化設定</button>
             </div>
-            <div id="f1KeywordRulesPanel" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fafbfd;">
-              <strong>關鍵字分組規則</strong>
+            <div id="f1KeywordRulesPanel" class="settings-panel" style="display:none;margin-top:10px;">
+              <div class="panel-title">關鍵字分組規則</div>
               <div class="grid" style="margin-top:8px;">
                 <label>規則名稱 <input id="kwRuleName" type="text" placeholder="例：租金類" /></label>
                 <label>關鍵字（逗號分隔）<input id="kwRuleKeywords" type="text" placeholder="租金,房租,辦公室" /></label>
@@ -344,8 +426,8 @@
               </div>
               <div id="kwRuleList" style="margin-top:10px;"></div>
             </div>
-            <div id="f1AutoSuggestPanel" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fafbfd;"></div>
-            <div id="f1NormPanel" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fafbfd;"></div>
+            <div id="f1AutoSuggestPanel" class="settings-panel" style="display:none;margin:8px 0;"></div>
+            <div id="f1NormPanel" class="settings-panel" style="display:none;margin:8px 0;"></div>
             <div id="f1CopyOutput" class="muted" style="margin-top:8px;"></div>
             <div id="f1Result" style="margin-top:10px;"></div>
             <div class="list-title">目前篩選清單</div>
@@ -652,6 +734,7 @@
           </div>
           <div class="toolbar">
             <button id="runF15Btn" class="primary">分析頻率</button>
+            <button id="f15ViewToggle" class="f15-toggle-btn" title="切換顯示原始摘要或正規化摘要">原始 / 正規化</button>
           </div>
           <div id="f15Result" style="margin-top:10px;"></div>
         </section>

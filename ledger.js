@@ -12,6 +12,22 @@ const AppState = {
   memo: { notes: {}, rules: [], missingResults: [] },
 };
 
+const APP_VERSION = '2026.03';
+
+const OWN_STORAGE_KEYS = [
+  'ledger_company_key',
+  'ledger_prev_summaries',
+  'f2_suggestThreshold',
+  'f2_timeWindowDays',
+  'f2_subsetMaxK',
+  'f2_tolerance',
+  'ledger_norm_settings',
+  'ledger_keyword_rules',
+  'ledger_exclusion_whitelist',
+  'memo_notes',
+  'memo_rules',
+];
+
 const hasFuse = typeof Fuse !== 'undefined';
 const hasDecimal = typeof Decimal !== 'undefined';
 let searchEngine = null;
@@ -54,7 +70,11 @@ function getCompanyKey(fileName) {
 }
 function loadPrevCompanyData() {
   try {
-    return { key: localStorage.getItem('ledger_company_key') || '', summaries: JSON.parse(localStorage.getItem('ledger_prev_summaries') || '{}') };
+    const key = localStorage.getItem('ledger_company_key') || '';
+    const rawSummaries = localStorage.getItem('ledger_prev_summaries');
+    const parsed = rawSummaries ? JSON.parse(rawSummaries) : {};
+    const summaries = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    return { key, summaries };
   } catch { return { key: '', summaries: {} }; }
 }
 function saveCompanyData(fileName, transactions) {
@@ -202,6 +222,15 @@ function saveNormSettings(s) {
   try { localStorage.setItem('ledger_norm_settings', JSON.stringify(s)); } catch {}
 }
 
+function safeReplace(str, patStr, flags, prefix) {
+  if (!patStr || typeof patStr !== 'string') return str;
+  if (patStr.length > 120) return str; // length guard
+  try {
+    const re = new RegExp(prefix ? ('^' + patStr) : patStr, flags || '');
+    return str.replace(re, '');
+  } catch { return str; } // invalid regex: skip silently
+}
+
 function normalizeSummary(raw, settings) {
   const s2 = settings || AppState.normSettings || defaultNormSettings();
   if (!raw) return '';
@@ -216,7 +245,7 @@ function normalizeSummary(raw, settings) {
     s = s.replace(/^[A-Za-z]{0,3}[\d０-９]{2,6}[.\-\s]+/, '');
     // Apply custom prefix patterns
     for (const pat of (s2.customPrefixPatterns || [])) {
-      try { s = s.replace(new RegExp('^' + pat), ''); } catch {}
+      s = safeReplace(s, pat, '', true);
     }
   }
   if (s2.removeDateSuffix) {
@@ -229,7 +258,7 @@ function normalizeSummary(raw, settings) {
   }
   // Apply custom remove patterns
   for (const pat of (s2.customRemovePatterns || [])) {
-    try { s = s.replace(new RegExp(pat, 'g'), ''); } catch {}
+    s = safeReplace(s, pat, 'g', false);
   }
   // Final trim
   s = s.trim();
@@ -292,8 +321,12 @@ function saveKeywordRules(rules) {
 }
 
 function loadWhitelist() {
-  try { return JSON.parse(localStorage.getItem('ledger_exclusion_whitelist') || '[]'); }
-  catch { return []; }
+  try {
+    const raw = localStorage.getItem('ledger_exclusion_whitelist');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 }
 
 function saveWhitelist(list) {
@@ -1323,7 +1356,7 @@ function renderAccountSelect() {
 function renderStats() {
   if (!AppState.meta.parsedAt) return;
   const ig = AppState.meta.igCount;
-  dom.metaText.textContent = `檔案：${AppState.meta.company}｜解析時間：${new Date(AppState.meta.parsedAt).toLocaleString('zh-TW')}`;
+  dom.metaText.textContent = `檔案：${AppState.meta.company}｜解析時間：${new Date(AppState.meta.parsedAt).toLocaleString('zh-TW')}｜v${APP_VERSION}`;
   dom.stats.textContent = `有效分錄 ${AppState.transactions.length}｜科目 ${Object.keys(AppState.accounts).length}｜略過：標題行 ${ig.header} 月計 ${ig.monthly} 上期結轉 ${ig.opening} 科目標頭 ${ig.accountHeader} 跨頁重複 ${ig.crossPageDup} 無效 ${ig.invalid + ig.other}｜摘要欄第 ${AppState.meta.columnMap.summary + 1} 欄`;
 }
 
@@ -2772,7 +2805,12 @@ function runF18() {
   AppState.trendAlert.ungrouped = allRows.filter((t) => !hit.has(t.id)).map((t) => t.id);
   renderF18Groups(allRows);
 }
-function csvEscape(v) { const s = String(v ?? ''); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replaceAll('"', '""')}"` : s; }
+function csvSafe(v) {
+  const s = String(v == null ? '' : v);
+  // Prevent formula injection: prefix dangerous leading chars
+  return /^[=+\-@|]/.test(s) ? "'" + s : s;
+}
+function csvEscape(v) { const s = csvSafe(v); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replaceAll('"', '""')}"` : s; }
 // ---- F9 Account Memo & Request List ----
 function loadMemoStorage() {
   try {
@@ -4639,7 +4677,7 @@ function bindEvents() {
   // ---- Clear local storage ----
   dom.clearLocalBtn?.addEventListener('click', () => {
     if (!confirm('確定清除所有本地儲存的備忘、規則、設定及跨期比對記錄？此操作無法復原。')) return;
-    localStorage.clear();
+    OWN_STORAGE_KEYS.forEach(k => { try { localStorage.removeItem(k); } catch {} });
     AppState.memo.notes = {}; AppState.memo.rules = []; AppState.memo.missingResults = [];
     if (dom.f9Result) dom.f9Result.innerHTML = '';
     if (dom.crossFileResult) dom.crossFileResult.innerHTML = '';

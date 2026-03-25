@@ -1,0 +1,6 @@
+*.bak
+*.bak-*
+*.diff
+*.ps1
+.DS_Store
+Thumbs.db

@@ -2317,20 +2317,22 @@ function runF3() {
     return;
   }
 
-  const runWorkerFallback = () => {
+  const runSync = () => {
     dom.runF3Btn.disabled = false;
     const r = bruteSubset(candidates, target, tolerance, 3000);
     AppState.pool.results = r.results;
     buildF3GroupsFromResults(rows);
     renderF3CandidateList(rows);
-    renderF3Groups(rows, r.results.length ? `結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷（同步模式）' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
+    renderF3Groups(rows, r.results.length ? `結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
   };
+  // file:// 協議下 Worker 無法使用，直接執行同步模式
+  if (location.protocol === 'file:') { runSync(); return; }
   try {
     if (!poolWorker) poolWorker = createPoolWorker();
-    if (!poolWorker) { runWorkerFallback(); return; }
+    if (!poolWorker) { runSync(); return; }
     dom.runF3Btn.disabled = true; dom.f3Result.innerHTML = `<p class="muted">計算中...</p>`;
-    const workerTimeout = setTimeout(() => { poolWorker = null; runWorkerFallback(); toast('Worker 逾時，改用同步模式', 'WARN'); }, 8000);
-    poolWorker.onerror = () => { clearTimeout(workerTimeout); poolWorker = null; runWorkerFallback(); };
+    const workerTimeout = setTimeout(() => { poolWorker = null; runSync(); }, 8000);
+    poolWorker.onerror = () => { clearTimeout(workerTimeout); poolWorker = null; runSync(); };
     poolWorker.onmessage = (ev) => {
       clearTimeout(workerTimeout);
       AppState.pool.results = ev.data.results || []; dom.runF3Btn.disabled = false;
@@ -2341,8 +2343,7 @@ function runF3() {
     poolWorker.postMessage({ candidates, target, tolerance, timeLimit: 3000 });
   } catch {
     poolWorker = null;
-    runWorkerFallback();
-    toast('Worker 不可用，已改用同步模式', 'WARN');
+    runSync();
   }
 }
 function percentile(sorted, p) { if (!sorted.length) return 0; const idx = (sorted.length - 1) * p; const lo = Math.floor(idx); const hi = Math.ceil(idx); if (lo === hi) return sorted[lo]; return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo); }

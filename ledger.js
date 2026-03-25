@@ -1754,6 +1754,7 @@ function applyF1GroupingFromDraft() {
   AppState.grouping.groups = Array.from(groups.entries()).map(([name, ids], idx) => ({ id: `g${idx + 1}`, name, transactionIds: ids, rule: { mode: 'A', keyword: '', threshold: 70 } }));
   AppState.grouping.ungrouped = [];
   AppState.grouping.mode = 'applied';
+  _f1GroupPages.clear();
   ensureOtherGroup();
   // Update defaultGroupName and effectiveGroupName on transactions
   const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
@@ -1811,9 +1812,11 @@ function applyF1GroupingEdits() {
   toast('已套用編輯後分組');
 }
 
-const F1_GROUP_TX_CAP = 200;
+const F1_GROUP_PAGE_SIZE = 200;
+const _f1GroupPages = new Map(); // groupId -> currentPage (0-indexed)
 
-function buildF1GroupCard(g, txMap, accountLastBalance, groupOptions) {
+function buildF1GroupCard(g, txMap, accountLastBalance, groupOptions, page) {
+  page = Number.isFinite(page) ? page : (_f1GroupPages.get(g.id) || 0);
   const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
   const sumSigned = txns.reduce((a, b) => a + getSignedAmount(b), 0);
   const byAccount = new Map();
@@ -1846,13 +1849,27 @@ function buildF1GroupCard(g, txMap, accountLastBalance, groupOptions) {
   const multiWarning = hasMulti ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要傳票</span>' : '';
   const effectiveName = txns.length > 0 ? (txns[0].effectiveGroupName || g.name) : g.name;
 
-  // Cap displayed transactions per group
-  const cappedTxns = txns.length > F1_GROUP_TX_CAP ? txns.slice(0, F1_GROUP_TX_CAP) : txns;
-  const capNote = txns.length > F1_GROUP_TX_CAP
-    ? `<div class="muted" style="margin:4px 0;font-size:12px;">（僅顯示前 ${F1_GROUP_TX_CAP} 筆，共 ${txns.length} 筆）</div>`
-    : '';
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(txns.length / F1_GROUP_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(0, page), totalPages - 1);
+  const startIdx = currentPage * F1_GROUP_PAGE_SIZE;
+  const pagedTxns = txns.slice(startIdx, startIdx + F1_GROUP_PAGE_SIZE);
 
-  const txnCards = cappedTxns.map((t) => {
+  // Pagination controls
+  let capNote = '';
+  if (totalPages > 1) {
+    const pageButtons = Array.from({ length: totalPages }, (_, i) =>
+      `<button data-f1-page="${g.id}||${i}" style="font-size:12px;padding:2px 8px;${i === currentPage ? 'font-weight:700;border-color:var(--brand);color:var(--brand);' : ''}">${i + 1}</button>`
+    ).join('');
+    capNote = `<div style="display:flex;align-items:center;gap:6px;margin:6px 0;flex-wrap:wrap;">
+      <span class="muted" style="font-size:12px;">第 ${currentPage + 1}/${totalPages} 頁（每頁 ${F1_GROUP_PAGE_SIZE} 筆，共 ${txns.length} 筆）</span>
+      ${currentPage > 0 ? `<button data-f1-page="${g.id}||${currentPage - 1}" style="font-size:12px;padding:2px 8px;">← 上頁</button>` : ''}
+      ${pageButtons}
+      ${currentPage < totalPages - 1 ? `<button data-f1-page="${g.id}||${currentPage + 1}" style="font-size:12px;padding:2px 8px;">下頁 →</button>` : ''}
+    </div>`;
+  }
+
+  const txnCards = pagedTxns.map((t) => {
     const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="badge-multi-summary">多摘要</span>' : '';
     const normSame = (t.summaryNormalized || '') === (t.rawSummary || '');
     const normDisp = normSame ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
@@ -1934,7 +1951,7 @@ function renderF1Output() {
   } else {
     for (const g of AppState.grouping.groups) {
       const el = document.createElement('div');
-      el.innerHTML = buildF1GroupCard(g, txMap, accountLastBalance, groupOptions);
+      el.innerHTML = buildF1GroupCard(g, txMap, accountLastBalance, groupOptions, _f1GroupPages.get(g.id) || 0);
       frag.appendChild(el);
     }
   }
@@ -3949,6 +3966,29 @@ function bindEvents() {
     const back = e.target?.dataset?.f1Back;
     if (back) {
       dom.f1CopyOutput.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    const pageAttr = e.target?.dataset?.f1Page;
+    if (pageAttr) {
+      const [gid, pStr] = pageAttr.split('||');
+      const newPage = parseInt(pStr, 10);
+      if (!gid || !Number.isFinite(newPage)) return;
+      _f1GroupPages.set(gid, newPage);
+      const g = AppState.grouping.groups.find((x) => x.id === gid);
+      if (!g) return;
+      const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+      const accountLastBalance = new Map();
+      AppState.transactions.forEach((t) => accountLastBalance.set(t.accountCode, Number(t.balance || 0)));
+      const groupOptions = AppState.grouping.groups.map((x) => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+      const anchorId = asGroupAnchor(gid);
+      const detailsEl = dom.f1Result.querySelector(`#${anchorId}`);
+      const wrapper = detailsEl?.parentElement;
+      if (wrapper) {
+        const wasOpen = detailsEl.open;
+        wrapper.innerHTML = buildF1GroupCard(g, txMap, accountLastBalance, groupOptions, newPage);
+        if (wasOpen) wrapper.querySelector('details')?.setAttribute('open', '');
+      }
       return;
     }
 

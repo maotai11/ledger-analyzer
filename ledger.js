@@ -35,7 +35,7 @@ function saveCompanyData(fileName, transactions) {
     const summaries = {};
     for (const t of transactions) {
       if (!summaries[t.accountCode]) summaries[t.accountCode] = [];
-      const s = cleanText(t.summary || '');
+      const s = cleanText(t.rawSummary || t.summary || '');
       if (s && !summaries[t.accountCode].includes(s)) summaries[t.accountCode].push(s);
     }
     localStorage.setItem('ledger_company_key', key);
@@ -55,7 +55,7 @@ function renderCrossFileResult(fileName, transactions) {
   const newSummaries = {};
   for (const t of transactions) {
     if (!newSummaries[t.accountCode]) newSummaries[t.accountCode] = new Set();
-    const s = cleanText(t.summary || ''); if (s) newSummaries[t.accountCode].add(s);
+    const s = cleanText(t.rawSummary || t.summary || ''); if (s) newSummaries[t.accountCode].add(s);
   }
   const missing = [], added = [];
   const allAccts = new Set([...Object.keys(prev.summaries), ...Object.keys(newSummaries)]);
@@ -333,7 +333,7 @@ function extractSummaryDates(summary, fallbackTxn) {
   return fallbackTxn?.date ? [fallbackTxn.date] : [];
 }
 function f6PeriodKeysFromTxn(txn, frequency) {
-  const dates = extractSummaryDates(txn.summary, txn);
+  const dates = extractSummaryDates(txn.rawSummary || txn.summary, txn);
   const keys = dates.map((dt) => {
     const roc = dt.getFullYear() - 1911;
     const mm = String(dt.getMonth() + 1).padStart(2, '0');
@@ -1309,7 +1309,7 @@ function buildF2UnmatchedSummary(rows) {
 function buildF2UnmatchedGroups(rows) {
   const map = new Map();
   rows.forEach((t) => {
-    const name = deriveF1GroupName(t.summary);
+    const name = deriveF1GroupName(t.rawSummary || t.summary);
     if (!map.has(name)) map.set(name, []);
     map.get(name).push(t.id);
   });
@@ -1370,8 +1370,8 @@ function bestSummarySimilarityPct(txMap, leftIds, rightIds) {
   const right = (rightIds || []).map((id) => txMap.get(id)).filter(Boolean);
   left.forEach((a) => {
     right.forEach((b) => {
-      const sa = a.summaryNormalized || a.summary;
-      const sb = b.summaryNormalized || b.summary;
+      const sa = a.summaryNormalized || a.rawSummary || a.summary;
+      const sb = b.summaryNormalized || b.rawSummary || b.summary;
       const s = jaccard(sa, sb) * 100;
       if (s > best) best = s;
     });
@@ -1661,7 +1661,7 @@ function f1NormalizeForMatch(s) {
 function f1RuleMatch(txn, rule) {
   const keyword = cleanText(rule?.keyword || '');
   if (!keyword) return false;
-  const text = f1NormalizeForMatch(txn?.summary || '');
+  const text = f1NormalizeForMatch(txn?.rawSummary || txn?.summary || '');
   if (!text) return false;
 
   const mode = rule?.mode || 'A';
@@ -1698,7 +1698,7 @@ function renderF1Draft() {
   const draft = (AppState.grouping.mode === 'draft' && AppState.grouping.draftItems.length)
     ? AppState.grouping.draftItems
     : rows.map((t) => {
-      const base = deriveF1GroupName(t.summary);
+      const base = deriveF1GroupName(t.rawSummary || t.summary);
       return { txnId: t.id, proposed: base, source: base };
     });
   AppState.grouping.draftItems = draft;
@@ -2031,7 +2031,7 @@ function runF2() {
       debitTotal: d.debit,
       creditTotal: c.credit,
       confidence: 'manual',
-      reason: { delta: Number(d.debit || 0) - Number(c.credit || 0), simPct: jaccard(d.summary, c.summary) * 100, voucherMatch: cleanText(d.voucherNo) === cleanText(c.voucherNo), dayDiff: daysBetween(d.date, c.date) },
+      reason: { delta: Number(d.debit || 0) - Number(c.credit || 0), simPct: jaccard(d.summaryNormalized || d.rawSummary || d.summary, c.summaryNormalized || c.rawSummary || c.summary) * 100, voucherMatch: cleanText(d.voucherNo) === cleanText(c.voucherNo), dayDiff: daysBetween(d.date, c.date) },
     });
     used.add(d.id);
     used.add(c.id);
@@ -2070,7 +2070,7 @@ function runF2() {
     credits.forEach((c) => {
       if (used.has(c.id)) return;
       if (!absDeltaWithin(d.debit, c.credit, tol)) return;
-      const s = jaccard(d.summaryNormalized || d.summary, c.summaryNormalized || c.summary);
+      const s = jaccard(d.summaryNormalized || d.rawSummary || d.summary, c.summaryNormalized || c.rawSummary || c.summary);
       if (s > score) { score = s; best = c; }
     });
     if (!best) return;
@@ -2101,7 +2101,7 @@ function runF2() {
     ? `<div class="table-wrap"><table><thead><tr><th>類型</th><th>借方</th><th class="col-amount">借方合計</th><th>貸方</th><th class="col-amount">貸方合計</th><th>Δ</th><th>相似%</th><th>信心度</th><th>操作</th></tr></thead><tbody>${pairs.map((p, idx) => {
       // old autoPairs shape
       if (p?.debit?.id && p?.credit?.id) {
-        const sim = jaccard(p.debit.summaryNormalized || p.debit.summary, p.credit.summaryNormalized || p.credit.summary) * 100;
+        const sim = jaccard(p.debit.summaryNormalized || p.debit.rawSummary || p.debit.summary, p.credit.summaryNormalized || p.credit.rawSummary || p.credit.summary) * 100;
         return `<tr><td>1↔1</td><td>${escapeHtml(p.debit.rawSummary || p.debit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.debitTotal)}</td><td>${escapeHtml(p.credit.rawSummary || p.credit.summary || '(空白摘要)')}</td><td class="col-amount">${fmtAmount(p.creditTotal)}</td><td>${fmtAmount(Number(p.debitTotal || 0) - Number(p.creditTotal || 0))}</td><td>${Math.round(sim)}</td><td>${p.confidence}</td><td><button data-f2-unpair="${idx}">移動至未沖帳</button></td></tr>`;
       }
       const txMap2 = new Map(rows.map((r) => [r.id, r]));
@@ -2171,7 +2171,7 @@ function renderF3Groups(rows, noteText = '') {
   const copyItems = AppState.pool.groups.map((g) => {
     const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
     const total = txns.reduce((a, b) => a + getSignedAmount(b), 0);
-    const detail = txns.map((t) => `${t.summary || '(空白摘要)'}(${fmtSigned(getSignedAmount(t))})`).join('、');
+    const detail = txns.map((t) => `${t.rawSummary || t.summary || '(空白摘要)'}(${fmtSigned(getSignedAmount(t))})`).join('、');
     return { buttonText: `${g.name}(${fmtSigned(total)})`, detailText: `${g.name}:${detail}`, anchorId: asScopedAnchor('f3-group', g.id) };
   });
   const copyRows = [];
@@ -2275,7 +2275,7 @@ function runF4() {
   const byA = new Map();
   rows.forEach((t) => {
     const amount = t.debit > 0 ? t.debit : t.credit;
-    const k = `${t.accountCode}||${t.summary}||${decKey(amount)}`;
+    const k = `${t.accountCode}||${t.summaryNormalized || t.rawSummary || t.summary}||${decKey(amount)}`;
     if (!byA.has(k)) byA.set(k, []);
     byA.get(k).push(t);
   });
@@ -2343,8 +2343,8 @@ function runF4() {
           periodROC,
           beforeVoucher: before.voucherNo,
           afterVoucher: after.voucherNo,
-          beforeSummary: before.summary,
-          afterSummary: after.summary,
+          beforeSummary: before.rawSummary || before.summary,
+          afterSummary: after.rawSummary || after.summary,
           missingFrom,
           missingTo,
         },
@@ -4289,9 +4289,9 @@ function bindEvents() {
     const rows = [];
     AppState.pool.groups.forEach((g) => {
       const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
-      txns.forEach((t) => rows.push([g.name, t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit]));
+      txns.forEach((t) => rows.push([g.name, t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.rawSummary || t.summary, t.debit, t.credit]));
     });
-    AppState.pool.ungrouped.forEach((id) => { const t = txMap.get(id); if (t) rows.push(['(未分組)', t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit]); });
+    AppState.pool.ungrouped.forEach((id) => { const t = txMap.get(id); if (t) rows.push(['(未分組)', t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.rawSummary || t.summary, t.debit, t.credit]); });
     if (!rows.length) return toast('尚無數字池結果', 'WARN');
     downloadCsv(`F3_${Date.now()}.csv`, ['組名', '傳票號碼', '日期', '科目代碼', '科目名稱', '摘要', '借方金額', '貸方金額'], rows);
   });
@@ -4299,7 +4299,7 @@ function bindEvents() {
   dom.exportF5Btn.addEventListener('click', () => {
     const results = AppState.crossLink.results;
     if (!results.length) return toast('尚無跨科目連結結果', 'WARN');
-    const csvRows = results.map((t) => [t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.summary, t.debit, t.credit, t.balance]);
+    const csvRows = results.map((t) => [t.voucherNo, t.dateROC, t.accountCode, t.accountName, t.rawSummary || t.summary, t.debit, t.credit, t.balance]);
     downloadCsv(`F5_${Date.now()}.csv`, ['傳票號碼', '日期', '科目代碼', '科目名稱', '摘要', '借方金額', '貸方金額', '餘額'], csvRows);
   });
 

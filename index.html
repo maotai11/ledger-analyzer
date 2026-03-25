@@ -4,10 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#165dff" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="description" content="離線分類帳分析工具：沖帳、異常偵測、試算表" />
-  <link rel="manifest" href="manifest.json" />
   <title>離線分類帳分析工具</title>
   <style>
     html * { box-sizing: border-box; }
@@ -366,7 +363,7 @@
         <button data-module="f13" title="逐筆追蹤餘額，找出跳掉點">📉 餘額走勢</button>
         <button data-module="f15" title="統計各摘要出現次數，識別孤筆">🏷 摘要頻率</button>
         <div class="nav-section">備忘工具</div>
-        <button data-module="f9" title="設定期望分錄規則，產出索取清單">📝 備忘索取</button>
+        <button data-module="f9" title="設定期望分錄規則，產出索取清單；及待辦事項">📝 備忘 &amp; 待辦</button>
       </aside>
 
       <main class="content">
@@ -597,61 +594,89 @@
         </section>
 
         <section class="card module" id="module-f9">
-          <h3>科目備忘與索取清單</h3>
-          <p class="muted" style="margin-top:0;">針對各科目書寫備忘、設定期望分錄規則，掃描缺少的費用帳，並輸出索取清單給客戶。</p>
+          <h3>備忘 &amp; 待辦</h3>
 
-          <div class="dual-col" style="margin-top:10px;">
-            <div class="card">
-              <strong>科目備忘錄</strong>
-              <label style="margin-top:8px;">選擇科目
-                <select id="f9AccountSelect"></select>
-              </label>
-              <label style="margin-top:8px;">備忘內容
-                <textarea id="f9Memo" rows="5" placeholder="例：每月租金約 50,000，通常月底入帳；注意是否有年終獎金沖銷…" style="resize:vertical;width:100%;"></textarea>
-              </label>
-              <div class="toolbar">
-                <button id="f9SaveMemoBtn" class="primary">儲存備忘</button>
+          <!-- Tab bar -->
+          <div style="display:flex;gap:8px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:8px;">
+            <button id="f9TabMemo" class="primary" style="padding:6px 16px;">備忘索取</button>
+            <button id="f9TabTodo" style="padding:6px 16px;">待辦事項</button>
+          </div>
+
+          <!-- Tab 1: 備忘索取 (existing content) -->
+          <div id="f9ContentMemo">
+            <p class="muted" style="margin-top:0;">針對各科目書寫備忘、設定期望分錄規則，掃描缺少的費用帳，並輸出索取清單給客戶。</p>
+
+            <div class="dual-col" style="margin-top:10px;">
+              <div class="card">
+                <strong>科目備忘錄</strong>
+                <label style="margin-top:8px;">選擇科目
+                  <select id="f9AccountSelect"></select>
+                </label>
+                <label style="margin-top:8px;">備忘內容
+                  <textarea id="f9Memo" rows="5" placeholder="例：每月租金約 50,000，通常月底入帳；注意是否有年終獎金沖銷…" style="resize:vertical;width:100%;"></textarea>
+                </label>
+                <div class="toolbar">
+                  <button id="f9SaveMemoBtn" class="primary">儲存備忘</button>
+                </div>
+                <div id="f9MemoStatus" class="muted" style="margin-top:4px;font-size:12px;"></div>
               </div>
-              <div id="f9MemoStatus" class="muted" style="margin-top:4px;font-size:12px;"></div>
+              <div class="card">
+                <strong>新增期望分錄規則</strong>
+                <div class="grid" style="margin-top:8px;">
+                  <label>科目（空白 = 全科目）
+                    <select id="f9RuleAccount"></select>
+                  </label>
+                  <label>摘要關鍵字
+                    <input id="f9RuleKeyword" type="text" placeholder="例：租金" />
+                  </label>
+                  <label>期望頻率
+                    <select id="f9RuleFreq">
+                      <option value="monthly">每月一筆</option>
+                      <option value="yearly">每年一筆</option>
+                      <option value="any">只查有無（不驗頻率）</option>
+                    </select>
+                  </label>
+                  <label>預期金額（可空）
+                    <input id="f9RuleAmount" type="number" step="0.01" min="0" placeholder="略" />
+                  </label>
+                </div>
+                <div class="toolbar">
+                  <button id="f9AddRuleBtn" class="primary">新增規則</button>
+                  <button id="f9ClearRulesBtn">清除全部</button>
+                </div>
+              </div>
             </div>
-            <div class="card">
-              <strong>新增期望分錄規則</strong>
-              <div class="grid" style="margin-top:8px;">
-                <label>科目（空白 = 全科目）
-                  <select id="f9RuleAccount"></select>
-                </label>
-                <label>摘要關鍵字
-                  <input id="f9RuleKeyword" type="text" placeholder="例：租金" />
-                </label>
-                <label>期望頻率
-                  <select id="f9RuleFreq">
-                    <option value="monthly">每月一筆</option>
-                    <option value="yearly">每年一筆</option>
-                    <option value="any">只查有無（不驗頻率）</option>
-                  </select>
-                </label>
-                <label>預期金額（可空）
-                  <input id="f9RuleAmount" type="number" step="0.01" min="0" placeholder="略" />
-                </label>
-              </div>
-              <div class="toolbar">
-                <button id="f9AddRuleBtn" class="primary">新增規則</button>
-                <button id="f9ClearRulesBtn">清除全部</button>
-              </div>
+
+            <div class="card" style="margin-top:10px;">
+              <strong>規則清單</strong>
+              <div id="f9RuleList" style="margin-top:8px;"><p class="muted">尚無規則。</p></div>
             </div>
+
+            <div class="toolbar" style="margin-top:10px;">
+              <button id="runF9Btn" class="primary">掃描缺少分錄</button>
+              <button id="copyF9RequestBtn">複製索取清單</button>
+              <button id="exportF9Btn">匯出 CSV</button>
+            </div>
+            <div id="f9Result" style="margin-top:10px;"></div>
           </div>
 
-          <div class="card" style="margin-top:10px;">
-            <strong>規則清單</strong>
-            <div id="f9RuleList" style="margin-top:8px;"><p class="muted">尚無規則。</p></div>
+          <!-- Tab 2: 待辦事項 (moved from floating panel) -->
+          <div id="f9ContentTodo" style="display:none;">
+            <p class="muted" style="margin-top:0;">記錄需要追查的傳票與待辦事項。</p>
+            <div class="grid" style="margin-top:8px;">
+              <label>傳票號碼
+                <input id="todoVoucher" type="text" />
+              </label>
+              <label>內容
+                <input id="todoContent" type="text" />
+              </label>
+            </div>
+            <div class="toolbar" style="margin-top:8px;">
+              <button id="addTodoBtn" class="primary">新增</button>
+              <button id="copyTodoAllBtn">複製全部</button>
+            </div>
+            <ul id="todoList" style="list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:5px;"></ul>
           </div>
-
-          <div class="toolbar" style="margin-top:10px;">
-            <button id="runF9Btn" class="primary">掃描缺少分錄</button>
-            <button id="copyF9RequestBtn">複製索取清單</button>
-            <button id="exportF9Btn">匯出 CSV</button>
-          </div>
-          <div id="f9Result" style="margin-top:10px;"></div>
         </section>
 
         <section class="card module" id="module-f14">
@@ -766,28 +791,6 @@
       </main>
     </div>
   </div>
-
-  <section class="todo" id="todoPanel">
-    <div class="todo-head">
-      <strong>待辦事項 <span id="todoBadge">0</span></strong>
-      <button id="todoToggleBtn" type="button">隱藏</button>
-    </div>
-    <div class="todo-body">
-      <div class="grid" style="margin-top:8px;">
-        <label>傳票號碼
-          <input id="todoVoucher" type="text" />
-        </label>
-        <label>內容
-          <input id="todoContent" type="text" />
-        </label>
-      </div>
-      <div class="toolbar">
-        <button id="addTodoBtn" class="primary">新增</button>
-        <button id="copyTodoAllBtn">複製全部</button>
-      </div>
-      <ul id="todoList"></ul>
-    </div>
-  </section>
 
   <div class="toast-host" id="toastHost"></div>
 

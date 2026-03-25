@@ -129,9 +129,11 @@ const dom = {
   f9RuleKeyword: document.getElementById('f9RuleKeyword'), f9RuleFreq: document.getElementById('f9RuleFreq'), f9RuleAmount: document.getElementById('f9RuleAmount'),
   f9AddRuleBtn: document.getElementById('f9AddRuleBtn'), f9ClearRulesBtn: document.getElementById('f9ClearRulesBtn'), f9RuleList: document.getElementById('f9RuleList'),
   runF9Btn: document.getElementById('runF9Btn'), copyF9RequestBtn: document.getElementById('copyF9RequestBtn'), exportF9Btn: document.getElementById('exportF9Btn'), f9Result: document.getElementById('f9Result'),
-  addTodoBtn: document.getElementById('addTodoBtn'), todoToggleBtn: document.getElementById('todoToggleBtn'), todoPanel: document.getElementById('todoPanel'),
+  addTodoBtn: document.getElementById('addTodoBtn'),
   todoVoucher: document.getElementById('todoVoucher'), todoContent: document.getElementById('todoContent'),
-  copyTodoAllBtn: document.getElementById('copyTodoAllBtn'), todoList: document.getElementById('todoList'), todoBadge: document.getElementById('todoBadge'), toastHost: document.getElementById('toastHost'),
+  copyTodoAllBtn: document.getElementById('copyTodoAllBtn'), todoList: document.getElementById('todoList'), toastHost: document.getElementById('toastHost'),
+  f9TabMemo: document.getElementById('f9TabMemo'), f9TabTodo: document.getElementById('f9TabTodo'),
+  f9ContentMemo: document.getElementById('f9ContentMemo'), f9ContentTodo: document.getElementById('f9ContentTodo'),
   runF10Btn: document.getElementById('runF10Btn'), f10Result: document.getElementById('f10Result'), f10Tolerance: document.getElementById('f10Tolerance'),
   runF11Btn: document.getElementById('runF11Btn'), f11Result: document.getElementById('f11Result'), f11Field: document.getElementById('f11Field'),
   runF13Btn: document.getElementById('runF13Btn'), f13Result: document.getElementById('f13Result'), f13AccountSelect: document.getElementById('f13AccountSelect'), f13AnomalyMode: document.getElementById('f13AnomalyMode'),
@@ -1809,6 +1811,106 @@ function applyF1GroupingEdits() {
   toast('已套用編輯後分組');
 }
 
+const F1_GROUP_TX_CAP = 200;
+
+function buildF1GroupCard(g, txMap, accountLastBalance, groupOptions) {
+  const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
+  const sumSigned = txns.reduce((a, b) => a + getSignedAmount(b), 0);
+  const byAccount = new Map();
+  txns.forEach((t) => {
+    if (!byAccount.has(t.accountCode)) byAccount.set(t.accountCode, { debit: 0, credit: 0, signed: 0 });
+    const x = byAccount.get(t.accountCode);
+    x.debit += t.debit || 0; x.credit += t.credit || 0; x.signed += getSignedAmount(t);
+  });
+  const checks = Array.from(byAccount.entries()).map(([acc, totals]) => {
+    const lastBal = accountLastBalance.get(acc) ?? 0;
+    return `<div class="muted">[${escapeHtml(acc)}] 本組：借 ${fmtAmount(totals.debit)} ／貸 ${fmtAmount(totals.credit)} ／淨額 ${fmtSigned(totals.signed)}｜科目末筆餘額 ${fmtAmount(lastBal)}</div>`;
+  }).join('');
+  const anchorId = asGroupAnchor(g.id);
+  const rule = g.rule || (g.rule = { mode: 'A', keyword: '', threshold: 70 });
+  const mode = rule.mode || 'A';
+  const th = Number.isFinite(Number(rule.threshold)) ? Number(rule.threshold) : 70;
+
+  // Determine group source badge from transactions
+  const manualCount = txns.filter((t) => t.manualGroupName).length;
+  const kwCount = txns.filter((t) => t.keywordGroupName).length;
+  let srcBadge;
+  if (manualCount > 0 && manualCount === txns.length) {
+    srcBadge = '<span class="pill" style="font-size:11px;background:#f6ffed;color:#237804;border-color:#b7eb8f;">手動</span>';
+  } else if (kwCount > txns.length / 2) {
+    srcBadge = '<span class="pill" style="font-size:11px;background:#e6f7ff;color:#0050b3;border-color:#91d5ff;">關鍵字</span>';
+  } else {
+    srcBadge = '<span class="pill" style="font-size:11px;background:#f0f0f0;color:#595959;border-color:#d9d9d9;">預設規則</span>';
+  }
+  const hasMulti = txns.some((t) => t.hasMultiSummaryInVoucher);
+  const multiWarning = hasMulti ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要傳票</span>' : '';
+  const effectiveName = txns.length > 0 ? (txns[0].effectiveGroupName || g.name) : g.name;
+
+  // Cap displayed transactions per group
+  const cappedTxns = txns.length > F1_GROUP_TX_CAP ? txns.slice(0, F1_GROUP_TX_CAP) : txns;
+  const capNote = txns.length > F1_GROUP_TX_CAP
+    ? `<div class="muted" style="margin:4px 0;font-size:12px;">（僅顯示前 ${F1_GROUP_TX_CAP} 筆，共 ${txns.length} 筆）</div>`
+    : '';
+
+  const txnCards = cappedTxns.map((t) => {
+    const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="badge-multi-summary">多摘要</span>' : '';
+    const normSame = (t.summaryNormalized || '') === (t.rawSummary || '');
+    const normDisp = normSame ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
+    const tGroupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
+    return `<details style="border:1px solid var(--line);border-radius:8px;margin:4px 0;padding:4px 8px;background:#fafbfd;">
+      <summary style="cursor:pointer;list-style:none;font-size:13px;"><input type="checkbox" data-f1-pick="${t.id}" data-f1-from="${g.id}" style="margin-right:4px;" />${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo || '')}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}
+        <select data-f1-target="${t.id}" style="margin-left:6px;font-size:12px;"><option value="">移動到...</option>${groupOptions}</select>
+        <button data-f1-move="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">移動</button>
+        <button data-f1-del="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">刪除</button>
+      </summary>
+      <div style="margin-top:6px;display:grid;gap:3px;font-size:12px;padding-left:8px;">
+        <div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div>
+        <div><strong>正規化摘要：</strong>${normDisp}</div>
+        <div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div>
+        <div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div>
+        <div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div>
+        <div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || '（無）')}</div>
+        <div><strong>分組來源：</strong>${escapeHtml(tGroupSrc)}</div>
+        <div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div>
+        <div><strong>日期：</strong>${escapeHtml(t.dateROC)}</div>
+        <div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div>
+        <div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div>
+      </div>
+    </details>`;
+  }).join('');
+
+  return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
+    <summary style="cursor:pointer;"><strong>群組：</strong><input data-f1-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" /> ${srcBadge}${multiWarning}｜有效名稱：<em style="color:#0050b3;">${escapeHtml(effectiveName)}</em>｜筆數 ${txns.length}｜群組簽帳合計 ${fmtSigned(sumSigned)} <button data-f1-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
+    <div style="margin-top:8px;"><button data-f1-back="1">回到分組摘要</button></div>
+
+    <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
+      <label style="min-width:220px;">本組關鍵字
+        <input data-f1-rule-keyword="${g.id}" value="${escapeHtml(rule.keyword || '')}" placeholder="例如：勞保費 / 發票AA123" />
+      </label>
+      <label>模式
+        <select data-f1-rule-mode="${g.id}">
+          <option value="A" ${mode === 'A' ? 'selected' : ''}>A：包含</option>
+          <option value="B" ${mode === 'B' ? 'selected' : ''}>B：相似度</option>
+        </select>
+      </label>
+      <label>相似度門檻(%)
+        <input data-f1-rule-threshold="${g.id}" type="number" min="0" max="100" step="1" value="${escapeHtml(String(th))}" style="width:110px;" />
+      </label>
+      <button data-f1-rule-select="${g.id}">只勾選命中</button>
+      <button data-f1-rule-clear="${g.id}">清除勾選</button>
+    </div>
+
+    <div style="margin-top:8px;">${checks || '<div class="muted">此群組無資料</div>'}</div>
+    <div style="margin-top:8px;">
+      <label><input type="checkbox" data-f1-check-all="${g.id}" /> 全選</label>
+      <select data-f1-batch-target="${g.id}" style="margin-left:8px;"><option value="">批次移動到...</option>${groupOptions}</select>
+      <button data-f1-batch-move="${g.id}">批次移動</button>
+      <button data-f1-batch-del="${g.id}">批次刪除</button>
+    </div>
+    <div style="margin-top:8px;">${capNote}${txnCards}</div>
+  </details>`;
+}
+
 function renderF1Output() {
   dom.applyF1Btn.textContent = '套用編輯後分組';
   const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
@@ -1816,99 +1918,28 @@ function renderF1Output() {
   AppState.transactions.forEach((t) => accountLastBalance.set(t.accountCode, Number(t.balance || 0)));
 
   const groupOptions = AppState.grouping.groups.map((g) => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
-  const cards = AppState.grouping.groups.map((g) => {
-    const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
-    const sumSigned = txns.reduce((a, b) => a + getSignedAmount(b), 0);
-    const byAccount = new Map();
-    txns.forEach((t) => {
-      if (!byAccount.has(t.accountCode)) byAccount.set(t.accountCode, { debit: 0, credit: 0, signed: 0 });
-      const x = byAccount.get(t.accountCode);
-      x.debit += t.debit || 0; x.credit += t.credit || 0; x.signed += getSignedAmount(t);
-    });
-    const checks = Array.from(byAccount.entries()).map(([acc, totals]) => {
-      const lastBal = accountLastBalance.get(acc) ?? 0;
-      return `<div class="muted">[${escapeHtml(acc)}] 本組：借 ${fmtAmount(totals.debit)} ／貸 ${fmtAmount(totals.credit)} ／淨額 ${fmtSigned(totals.signed)}｜科目末筆餘額 ${fmtAmount(lastBal)}</div>`;
-    }).join('');
-    const anchorId = asGroupAnchor(g.id);
-    const rule = g.rule || (g.rule = { mode: 'A', keyword: '', threshold: 70 });
-    const mode = rule.mode || 'A';
-    const th = Number.isFinite(Number(rule.threshold)) ? Number(rule.threshold) : 70;
 
-    // Determine group source badge from transactions
-    const manualCount = txns.filter((t) => t.manualGroupName).length;
-    const kwCount = txns.filter((t) => t.keywordGroupName).length;
-    let srcBadge;
-    if (manualCount > 0 && manualCount === txns.length) {
-      srcBadge = '<span class="pill" style="font-size:11px;background:#f6ffed;color:#237804;border-color:#b7eb8f;">手動</span>';
-    } else if (kwCount > txns.length / 2) {
-      srcBadge = '<span class="pill" style="font-size:11px;background:#e6f7ff;color:#0050b3;border-color:#91d5ff;">關鍵字</span>';
-    } else {
-      srcBadge = '<span class="pill" style="font-size:11px;background:#f0f0f0;color:#595959;border-color:#d9d9d9;">預設規則</span>';
+  // Build DOM incrementally to avoid giant string concatenation (fixes RangeError for 10k+ txns)
+  const frag = document.createDocumentFragment();
+  const headerP = document.createElement('p');
+  headerP.className = 'muted';
+  headerP.textContent = `群組數 ${AppState.grouping.groups.length}｜未分組 ${AppState.grouping.ungrouped.length}`;
+  frag.appendChild(headerP);
+
+  if (AppState.grouping.groups.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = '目前無群組。';
+    frag.appendChild(p);
+  } else {
+    for (const g of AppState.grouping.groups) {
+      const el = document.createElement('div');
+      el.innerHTML = buildF1GroupCard(g, txMap, accountLastBalance, groupOptions);
+      frag.appendChild(el);
     }
-    const hasMulti = txns.some((t) => t.hasMultiSummaryInVoucher);
-    const multiWarning = hasMulti ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要傳票</span>' : '';
-    // Use effectiveGroupName as display header (fallback to g.name)
-    const effectiveName = txns.length > 0 ? (txns[0].effectiveGroupName || g.name) : g.name;
-
-    return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
-      <summary style="cursor:pointer;"><strong>群組：</strong><input data-f1-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" /> ${srcBadge}${multiWarning}｜有效名稱：<em style="color:#0050b3;">${escapeHtml(effectiveName)}</em>｜筆數 ${txns.length}｜群組簽帳合計 ${fmtSigned(sumSigned)} <button data-f1-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
-      <div style="margin-top:8px;"><button data-f1-back="1">回到分組摘要</button></div>
-
-      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:end;">
-        <label style="min-width:220px;">本組關鍵字
-          <input data-f1-rule-keyword="${g.id}" value="${escapeHtml(rule.keyword || '')}" placeholder="例如：勞保費 / 發票AA123" />
-        </label>
-        <label>模式
-          <select data-f1-rule-mode="${g.id}">
-            <option value="A" ${mode === 'A' ? 'selected' : ''}>A：包含</option>
-            <option value="B" ${mode === 'B' ? 'selected' : ''}>B：相似度</option>
-          </select>
-        </label>
-        <label>相似度門檻(%)
-          <input data-f1-rule-threshold="${g.id}" type="number" min="0" max="100" step="1" value="${escapeHtml(String(th))}" style="width:110px;" />
-        </label>
-        <button data-f1-rule-select="${g.id}">只勾選命中</button>
-        <button data-f1-rule-clear="${g.id}">清除勾選</button>
-      </div>
-
-      <div style="margin-top:8px;">${checks || '<div class="muted">此群組無資料</div>'}</div>
-      <div style="margin-top:8px;">
-        <label><input type="checkbox" data-f1-check-all="${g.id}" /> 全選</label>
-        <select data-f1-batch-target="${g.id}" style="margin-left:8px;"><option value="">批次移動到...</option>${groupOptions}</select>
-        <button data-f1-batch-move="${g.id}">批次移動</button>
-        <button data-f1-batch-del="${g.id}">批次刪除</button>
-      </div>
-      <div style="margin-top:8px;">
-      ${txns.map((t) => {
-        const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="badge-multi-summary">多摘要</span>' : '';
-        const normSame = (t.summaryNormalized || '') === (t.rawSummary || '');
-        const normDisp = normSame ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
-        const tGroupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
-        return `<details style="border:1px solid var(--line);border-radius:8px;margin:4px 0;padding:4px 8px;background:#fafbfd;">
-          <summary style="cursor:pointer;list-style:none;font-size:13px;"><input type="checkbox" data-f1-pick="${t.id}" data-f1-from="${g.id}" style="margin-right:4px;" />${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo || '')}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}
-            <select data-f1-target="${t.id}" style="margin-left:6px;font-size:12px;"><option value="">移動到...</option>${groupOptions}</select>
-            <button data-f1-move="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">移動</button>
-            <button data-f1-del="${t.id}" data-f1-from="${g.id}" style="font-size:11px;padding:1px 5px;">刪除</button>
-          </summary>
-          <div style="margin-top:6px;display:grid;gap:3px;font-size:12px;padding-left:8px;">
-            <div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div>
-            <div><strong>正規化摘要：</strong>${normDisp}</div>
-            <div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div>
-            <div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div>
-            <div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div>
-            <div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || '（無）')}</div>
-            <div><strong>分組來源：</strong>${escapeHtml(tGroupSrc)}</div>
-            <div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div>
-            <div><strong>日期：</strong>${escapeHtml(t.dateROC)}</div>
-            <div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div>
-            <div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div>
-          </div>
-        </details>`;
-      }).join('')}
-      </div>
-    </details>`;
-  }).join('');
-  dom.f1Result.innerHTML = `<p class="muted">群組數 ${AppState.grouping.groups.length}｜未分組 ${AppState.grouping.ungrouped.length}</p>${cards || '<p class="muted">目前無群組。</p>'}`;
+  }
+  dom.f1Result.innerHTML = '';
+  dom.f1Result.appendChild(frag);
 
   const copyItems = AppState.grouping.groups.map((g) => {
     const txns = g.transactionIds.map((id) => txMap.get(id)).filter(Boolean);
@@ -2780,8 +2811,46 @@ function runF9Missing() {
   AppState.memo.missingResults = results;
   return results;
 }
+function runF9SummaryGap() {
+  // Group all transactions by normalised summary
+  const bySum = new Map();
+  for (const t of AppState.transactions) {
+    const key = t.summaryNormalized || t.rawSummary || t.summary || '';
+    if (!key) continue;
+    if (!bySum.has(key)) bySum.set(key, []);
+    bySum.get(key).push(t);
+  }
+  const today = new Date();
+  const dormant = [];
+  for (const [summary, txns] of bySum) {
+    // Count distinct months this summary appeared in
+    const months = new Set();
+    for (const t of txns) {
+      if (t.periodROC) months.add(t.periodROC);
+    }
+    if (months.size < 3) continue; // only care about recurring summaries
+    // Find the latest transaction date
+    let latestDate = null;
+    for (const t of txns) {
+      if (t.date instanceof Date && !Number.isNaN(t.date.getTime())) {
+        if (!latestDate || t.date > latestDate) latestDate = t.date;
+      }
+    }
+    if (!latestDate) continue;
+    const gapDays = Math.floor((today - latestDate) / 86400000);
+    if (gapDays > 45) {
+      dormant.push({ summary, txns, months: months.size, latestDate, gapDays });
+    }
+  }
+  // Sort by gap descending
+  dormant.sort((a, b) => b.gapDays - a.gapDays);
+  return dormant;
+}
+
 function renderF9Result(results) {
   if (!results.length) { dom.f9Result.innerHTML = '<p class="muted">尚無規則，請先新增規則。</p>'; return; }
+  const totalMissing = results.reduce((s, r) => s + r.missing.length, 0);
+
   const cards = results.map((r, idx) => {
     const accLabel = r.rule.accountCode ? `[${escapeHtml(r.rule.accountCode)}] ${escapeHtml(r.accName)}` : '全科目';
     const freqLabel = r.rule.frequency === 'monthly' ? '每月' : r.rule.frequency === 'yearly' ? '每年' : '只查有無';
@@ -2791,16 +2860,49 @@ function renderF9Result(results) {
       : r.note
         ? `<div class="warn" style="margin-top:6px;">${escapeHtml(r.note)}</div>`
         : `<div class="ok" style="margin-top:6px;">全部期間均有分錄 ✓（共 ${r.found} 個期間）</div>`;
-    // Show memo for this account
     const memo = r.rule.accountCode ? (AppState.memo.notes[r.rule.accountCode] || '') : '';
     const memoHtml = memo ? `<div class="muted" style="margin-top:4px;font-style:italic;">備忘：${escapeHtml(memo)}</div>` : '';
+    // Show matched transactions as collapsible detail
+    let matchedRows = AppState.transactions;
+    if (r.rule.accountCode) matchedRows = matchedRows.filter((t) => t.accountCode === r.rule.accountCode);
+    if (r.rule.keyword) matchedRows = matchedRows.filter((t) => (t.summaryNormalized || t.rawSummary || t.summary || '').includes(r.rule.keyword));
+    const matchedHtml = matchedRows.length
+      ? `<details style="margin-top:8px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--brand);">查看命中分錄（${matchedRows.length} 筆）</summary>
+          <div class="table-wrap" style="margin-top:6px;">
+            <table>
+              <thead><tr><th>日期</th><th>傳票</th><th>摘要</th><th class="col-amount">借方</th><th class="col-amount">貸方</th></tr></thead>
+              <tbody>${matchedRows.slice(0, 300).map((t) => `<tr><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo || '')}</td><td>${escapeHtml((t.rawSummary || t.summary || '').slice(0, 60))}</td><td class="col-amount">${fmtAmount(t.debit)}</td><td class="col-amount">${fmtAmount(t.credit)}</td></tr>`).join('')}</tbody>
+            </table>
+            ${matchedRows.length > 300 ? `<p class="muted" style="padding:6px;">（僅顯示前 300 筆，共 ${matchedRows.length} 筆）</p>` : ''}
+          </div>
+        </details>`
+      : '';
     return `<details class="card" style="margin:8px 0;" open>
       <summary><strong>${idx + 1}. ${accLabel}</strong>｜${escapeHtml(r.rule.keyword || '(無關鍵字)')}｜${freqLabel}${amtLabel}</summary>
-      ${memoHtml}${statusHtml}
+      ${memoHtml}${statusHtml}${matchedHtml}
     </details>`;
   }).join('');
-  const totalMissing = results.reduce((s, r) => s + r.missing.length, 0);
-  dom.f9Result.innerHTML = `<p class="muted">掃描 ${results.length} 條規則｜共缺少 <strong class="${totalMissing ? 'danger' : 'ok'}">${totalMissing}</strong> 個期間</p>${cards}`;
+
+  // Summary gap detection
+  const dormant = runF9SummaryGap();
+  const gapHtml = dormant.length
+    ? `<div class="card" style="margin-top:16px;border-color:var(--warn);">
+        <strong style="color:var(--warn);">摘要斷層偵測（${dormant.length} 筆定期摘要超過 45 天未出現）</strong>
+        ${dormant.map((d) => `<details style="margin:6px 0;border:1px solid var(--line);border-radius:8px;padding:4px 8px;">
+          <summary style="cursor:pointer;font-size:13px;">${escapeHtml(d.summary.slice(0, 60))}｜曾出現 ${d.months} 個月｜最後：${d.latestDate.toLocaleDateString('zh-TW')}（${d.gapDays} 天前）</summary>
+          <div class="table-wrap" style="margin-top:6px;">
+            <table>
+              <thead><tr><th>日期</th><th>傳票</th><th>摘要</th><th class="col-amount">借方</th><th class="col-amount">貸方</th></tr></thead>
+              <tbody>${d.txns.slice(-20).map((t) => `<tr><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo || '')}</td><td>${escapeHtml((t.rawSummary || t.summary || '').slice(0, 60))}</td><td class="col-amount">${fmtAmount(t.debit)}</td><td class="col-amount">${fmtAmount(t.credit)}</td></tr>`).join('')}</tbody>
+            </table>
+            ${d.txns.length > 20 ? `<p class="muted" style="padding:6px;">（顯示最後 20 筆，共 ${d.txns.length} 筆）</p>` : ''}
+          </div>
+        </details>`).join('')}
+      </div>`
+    : `<div class="card" style="margin-top:16px;border-color:var(--ok);background:#f6ffed;"><strong style="color:var(--ok);">摘要斷層偵測：</strong><span class="muted"> 無定期摘要斷層（45 天內均有出現）。</span></div>`;
+
+  dom.f9Result.innerHTML = `<p class="muted">掃描 ${results.length} 條規則｜共缺少 <strong class="${totalMissing ? 'danger' : 'ok'}">${totalMissing}</strong> 個期間</p>${cards}${gapHtml}`;
 }
 function buildF9RequestText() {
   const results = AppState.memo.missingResults || [];
@@ -3135,8 +3237,8 @@ function downloadCsv(name, headers, rows) {
 }
 
 function renderTodos() {
-  dom.todoBadge.textContent = String(AppState.todos.length);
-  dom.todoList.innerHTML = AppState.todos.map((t) => `<li data-todo-id="${t.id}"><input data-todo-voucher="${t.id}" value="${escapeHtml(t.voucherNo)}" style="width:120px;" /> <input data-todo-content="${t.id}" value="${escapeHtml(t.content)}" style="min-width:260px;" /> <button data-todo-save="${t.id}">儲存</button> <button data-todo-del="${t.id}">刪除</button></li>`).join('');
+  if (!dom.todoList) return;
+  dom.todoList.innerHTML = AppState.todos.map((t) => `<li data-todo-id="${t.id}" style="border:1px solid var(--line2);border-radius:8px;padding:6px 8px;font-size:13px;"><input data-todo-voucher="${t.id}" value="${escapeHtml(t.voucherNo)}" style="width:120px;" /> <input data-todo-content="${t.id}" value="${escapeHtml(t.content)}" style="min-width:260px;" /> <button data-todo-save="${t.id}">儲存</button> <button data-todo-del="${t.id}">刪除</button></li>`).join('');
 }
 
 function debounce(fn, wait = 180) {
@@ -4077,9 +4179,30 @@ function bindEvents() {
 
   dom.copyF1TextBtn.addEventListener('click', () => copyText(AppState.grouping.copyText || '', '分組摘要已複製'));
 
-  dom.todoToggleBtn.addEventListener('click', () => {
-    dom.todoPanel.classList.toggle('collapsed');
-    dom.todoToggleBtn.textContent = dom.todoPanel.classList.contains('collapsed') ? '展開' : '隱藏';
+  // F9 tab switching
+  dom.f9TabMemo?.addEventListener('click', () => {
+    dom.f9ContentMemo.style.display = '';
+    dom.f9ContentTodo.style.display = 'none';
+    dom.f9TabMemo.classList.add('active');
+    dom.f9TabTodo.classList.remove('active');
+    dom.f9TabMemo.style.background = 'var(--brand)';
+    dom.f9TabMemo.style.color = '#fff';
+    dom.f9TabMemo.style.borderColor = 'var(--brand)';
+    dom.f9TabTodo.style.background = '';
+    dom.f9TabTodo.style.color = '';
+    dom.f9TabTodo.style.borderColor = '';
+  });
+  dom.f9TabTodo?.addEventListener('click', () => {
+    dom.f9ContentMemo.style.display = 'none';
+    dom.f9ContentTodo.style.display = '';
+    dom.f9TabTodo.classList.add('active');
+    dom.f9TabMemo.classList.remove('active');
+    dom.f9TabTodo.style.background = 'var(--brand)';
+    dom.f9TabTodo.style.color = '#fff';
+    dom.f9TabTodo.style.borderColor = 'var(--brand)';
+    dom.f9TabMemo.style.background = '';
+    dom.f9TabMemo.style.color = '';
+    dom.f9TabMemo.style.borderColor = '';
   });
 
   const autoF2 = debounce(() => { if (AppState.transactions.length) runF2(); });

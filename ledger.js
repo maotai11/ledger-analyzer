@@ -16,6 +16,34 @@ const hasFuse = typeof Fuse !== 'undefined';
 const hasDecimal = typeof Decimal !== 'undefined';
 let searchEngine = null;
 let poolWorker = null;
+
+// Inline Web Worker for F3 subset-sum — avoids file:// cross-origin CORS error
+function createPoolWorker() {
+  const src = `self.onmessage=(event)=>{
+const{candidates=[],target=0,tolerance=0.01,timeLimit=3000}=event.data||{};
+const start=Date.now();const out=[];
+const cents=candidates.map((c)=>({...c,cent:Math.round(Number(c.amount||0)*100)}));
+const targetCent=Math.round(Number(target||0)*100);
+const tolCent=Math.round(Number(tolerance||0)*100);
+let interrupted=false;
+function pushResult(picks,total){out.push({id:Math.random().toString(36).slice(2,10),transactionIds:picks.map((p)=>p.id),total:total/100,delta:(total-targetCent)/100});}
+function dfs(idx,picks,total){
+if(out.length>=50||interrupted)return;
+if(Date.now()-start>timeLimit){interrupted=true;return;}
+if(Math.abs(total-targetCent)<=tolCent&&picks.length>0){pushResult(picks,total);if(out.length>=50)return;}
+if(idx>=cents.length)return;
+for(let i=idx;i<cents.length;i+=1){picks.push(cents[i]);dfs(i+1,picks,total+cents[i].cent);picks.pop();if(out.length>=50||interrupted)return;}
+}
+dfs(0,[],0);
+self.postMessage({results:out,interrupted,elapsed:Date.now()-start});};`;
+  try {
+    const blob = new Blob([src], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    const w = new Worker(url);
+    URL.revokeObjectURL(url);
+    return w;
+  } catch (e) { return null; }
+}
 // Overview sort & pagination state
 let _ovSort = { col: 'dateROC', dir: 'asc' };
 let _ovPage = 1;
@@ -2298,7 +2326,8 @@ function runF3() {
     renderF3Groups(rows, r.results.length ? `結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷（同步模式）' : ''}` : `命中 0 組，候選 ${candidates.length} 筆仍可見。`);
   };
   try {
-    if (!poolWorker) poolWorker = new Worker('pool.worker.js');
+    if (!poolWorker) poolWorker = createPoolWorker();
+    if (!poolWorker) { runWorkerFallback(); return; }
     dom.runF3Btn.disabled = true; dom.f3Result.innerHTML = `<p class="muted">計算中...</p>`;
     const workerTimeout = setTimeout(() => { poolWorker = null; runWorkerFallback(); toast('Worker 逾時，改用同步模式', 'WARN'); }, 8000);
     poolWorker.onerror = () => { clearTimeout(workerTimeout); poolWorker = null; runWorkerFallback(); };

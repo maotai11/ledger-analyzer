@@ -5,6 +5,7 @@ const AppState = {
   accounts: {}, transactions: [],
   grouping: { groups: [], ungrouped: [], draftItems: [], mode: 'applied', draftRenameMap: {}, draftExtraGroups: [], copyText: '', keywordRules: [] },
   groupingStore: {}, activeGroupingKey: 'all',
+  normSettings: null,
   offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], manualMatches: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '', suggestThreshold: 80, timeWindowDays: 14, subsetMaxK: 4, subsetTimeLimitMs: 1200, unmatchedView: 'review' },
   pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [], reviewed: new Set() }, crossLink: { mode: 'keyword', query: '', results: [] },
   gap: { results: [], periodicSuggestions: [] }, dupVoucher: { results: [] }, trendAlert: { results: [], groups: [], ungrouped: [], copyText: '' }, todos: [],
@@ -138,25 +139,63 @@ const dom = {
   f1KeywordRulesBtn: document.getElementById('f1KeywordRulesBtn'), f1KeywordRulesPanel: document.getElementById('f1KeywordRulesPanel'),
   kwRuleName: document.getElementById('kwRuleName'), kwRuleKeywords: document.getElementById('kwRuleKeywords'), kwRuleExclude: document.getElementById('kwRuleExclude'), kwRuleTarget: document.getElementById('kwRuleTarget'), kwRulePriority: document.getElementById('kwRulePriority'), kwAddRuleBtn: document.getElementById('kwAddRuleBtn'), kwRuleList: document.getElementById('kwRuleList'),
   f1MainContent: document.getElementById('f1MainContent'),
+  f1DualViewBtn: document.getElementById('f1DualViewBtn'),
+  f1AutoSuggestBtn: document.getElementById('f1AutoSuggestBtn'),
+  f1AutoSuggestPanel: document.getElementById('f1AutoSuggestPanel'),
+  f1NormSettingsBtn: document.getElementById('f1NormSettingsBtn'),
+  f1NormPanel: document.getElementById('f1NormPanel'),
 };
 
 function escapeHtml(v) { return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function cleanText(v) { return v == null ? '' : String(v).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
 
-function normalizeSummary(raw) {
+function defaultNormSettings() {
+  return { version: 1, removeSerialPrefix: true, removeDateSuffix: true, removeCodePatterns: true, customPrefixPatterns: [], customRemovePatterns: [] };
+}
+
+function loadNormSettings() {
+  try {
+    const raw = localStorage.getItem('ledger_norm_settings');
+    if (!raw) return defaultNormSettings();
+    const parsed = JSON.parse(raw);
+    if (parsed.version !== 1) return defaultNormSettings();
+    return { ...defaultNormSettings(), ...parsed };
+  } catch { return defaultNormSettings(); }
+}
+
+function saveNormSettings(s) {
+  try { localStorage.setItem('ledger_norm_settings', JSON.stringify(s)); } catch {}
+}
+
+function normalizeSummary(raw, settings) {
+  const s2 = settings || AppState.normSettings || defaultNormSettings();
   if (!raw) return '';
   let s = String(raw);
   // Remove carriage returns and _x000D_ artifacts
   s = s.replace(/_x000D_/gi, '').replace(/\r/g, '');
   // Normalize full-width spaces and common punctuation
   s = s.replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim();
-  // Strip leading serial/sequence numbers like "123.", "A001-", "甲01."
-  s = s.replace(/^[\d０-９]{1,6}[.\-、\s。]+/, '');
-  s = s.replace(/^[A-Za-z]{0,3}[\d０-９]{2,6}[.\-\s]+/, '');
-  // Strip trailing ROC/AD date patterns like 114/01/15 or 2025-01-15
-  s = s.replace(/[\s　]+\d{2,4}[-/]\d{1,2}[-/]\d{1,2}$/, '');
-  // Strip parenthetical internal code patterns like (AB-123) if code-like
-  s = s.replace(/\s*\([A-Z0-9\-_]{2,12}\)\s*$/, '');
+  if (s2.removeSerialPrefix) {
+    // Strip leading serial/sequence numbers like "123.", "A001-", "甲01."
+    s = s.replace(/^[\d０-９]{1,6}[.\-、\s。]+/, '');
+    s = s.replace(/^[A-Za-z]{0,3}[\d０-９]{2,6}[.\-\s]+/, '');
+    // Apply custom prefix patterns
+    for (const pat of (s2.customPrefixPatterns || [])) {
+      try { s = s.replace(new RegExp('^' + pat), ''); } catch {}
+    }
+  }
+  if (s2.removeDateSuffix) {
+    // Strip trailing ROC/AD date patterns like 114/01/15 or 2025-01-15
+    s = s.replace(/[\s　]+\d{2,4}[-/]\d{1,2}[-/]\d{1,2}$/, '');
+  }
+  if (s2.removeCodePatterns) {
+    // Strip parenthetical internal code patterns like (AB-123) if code-like
+    s = s.replace(/\s*\([A-Z0-9\-_]{2,12}\)\s*$/, '');
+  }
+  // Apply custom remove patterns
+  for (const pat of (s2.customRemovePatterns || [])) {
+    try { s = s.replace(new RegExp(pat, 'g'), ''); } catch {}
+  }
   // Final trim
   s = s.trim();
   return s || String(raw).trim();
@@ -433,33 +472,57 @@ function pickSummary(row, map) {
   }
   return '';
 }
+function rowMatchesWhitelist(row, whitelist) {
+  if (!whitelist.length) return false;
+  const joined = row.slice(0, 8).map(c => String(c == null ? '' : c).trim()).filter(Boolean).join('|');
+  return whitelist.some(wlEntry => joined.includes(wlEntry) || wlEntry.includes(joined.slice(0, 20)));
+}
+
 function parseWorkbook(arrayBuffer, fileName) {
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
   const map = detectColumnMap(rows);
 
+  const whitelist = loadWhitelist();
   const accounts = {}; const txns = []; const seen = new Set();
-  const ig = { header: 0, monthly: 0, opening: 0, accountHeader: 0, crossPageDup: 0, invalid: 0, other: 0 };
+  const ig = { header: 0, monthly: 0, opening: 0, accountHeader: 0, crossPageDup: 0, invalid: 0, other: 0, whitelisted: 0 };
   const excludedRows = [];
   let currentAccount = null;
 
   for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
     const row = rows[rowIdx];
     const colA = cleanText(row[map.date]);
+    const isWhitelisted = rowMatchesWhitelist(row, whitelist);
+
     if (!colA) {
-      ig.other += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '空白列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '白名單保留（空白列）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.other += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '空白列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      }
       continue;
     }
     if (looksLikeHeaderRow(colA)) {
-      ig.header += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: 'page_header', reason: '頁首/製表標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'page_header', reason: '白名單保留（頁首）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.header += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'page_header', reason: '頁首/製表標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      }
       continue;
     }
     if (colA.startsWith('月計:') || colA.startsWith('累計:')) {
-      ig.monthly += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map) || 'month_total', reason: '月計/累計列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map) || 'month_total', reason: '白名單保留（月計/累計）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.monthly += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map) || 'month_total', reason: '月計/累計列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      }
       continue;
     }
     if (colA.startsWith('項')) {
@@ -468,21 +531,36 @@ function parseWorkbook(arrayBuffer, fileName) {
         currentAccount = acc;
         if (!accounts[acc.code]) accounts[acc.code] = { ...acc, openingBalance: null, transactionIds: [] };
       }
-      ig.accountHeader += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: 'account_header', reason: '科目標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'account_header', reason: '白名單保留（科目標頭）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.accountHeader += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'account_header', reason: '科目標頭', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      }
       continue;
     }
     if (colA === '上期結轉') {
       if (currentAccount && map.balance >= 0 && accounts[currentAccount.code]) accounts[currentAccount.code].openingBalance = decToNum(dec(row[map.balance]));
-      ig.opening += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: 'opening_balance', reason: '上期結轉列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'opening_balance', reason: '白名單保留（上期結轉）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.opening += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: 'opening_balance', reason: '上期結轉列', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: false });
+      }
       continue;
     }
 
     const voucherNo = cleanText(row[map.voucherNo]); const d = parseROCDate(colA);
     if (!currentAccount || !voucherNo || !d) {
-      ig.invalid += 1;
-      excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '無效列（缺科目/傳票/日期）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: true });
+      if (isWhitelisted) {
+        ig.whitelisted += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '白名單保留（資料不足以解析為分錄）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: true, recoverable: true });
+      } else {
+        ig.invalid += 1;
+        excludedRows.push({ rowIndex: rowIdx, rowType: classifyRow(row, map), reason: '無效列（缺科目/傳票/日期）', rawContent: row.slice(0, 8).map((c) => String(c == null ? '' : c)), whitelisted: false, recoverable: true });
+      }
       continue;
     }
 
@@ -498,7 +576,7 @@ function parseWorkbook(arrayBuffer, fileName) {
     seen.add(dupKey);
 
     const rawSummary = txnSummary;
-    const summaryNormalized = normalizeSummary(rawSummary);
+    const summaryNormalized = normalizeSummary(rawSummary, AppState.normSettings);
     const txn = {
       id: Math.random().toString(36).slice(2, 10), accountCode: currentAccount.code, accountName: currentAccount.name,
       accountNormalSide: currentAccount.normalSide, voucherNo, date: d.date, dateISO: d.dateISO, dateROC: d.dateROC,
@@ -506,6 +584,7 @@ function parseWorkbook(arrayBuffer, fileName) {
       debit: decToNum(debit), credit: decToNum(credit),
       drCr: map.drCr >= 0 ? cleanText(row[map.drCr]) : '', balance: map.balance >= 0 ? decToNum(dec(row[map.balance])) : 0,
       hasMultiSummaryInVoucher: false, keywordGroupName: '', defaultGroupName: '', manualGroupName: '', effectiveGroupName: '',
+      whitelistSaved: isWhitelisted,
     };
     txns.push(txn); accounts[currentAccount.code].transactionIds.push(txn.id);
   }
@@ -538,7 +617,8 @@ function parseWorkbook(arrayBuffer, fileName) {
   AppState.offset.unmatchedGroups = [];
 
   if (hasFuse) searchEngine = new Fuse(txns, { keys: ['summary', 'voucherNo', 'accountName'], threshold: 0.35 });
-  toast(`解析完成：${txns.length} 筆有效分錄｜${Object.keys(accounts).length} 個科目｜${ig.crossPageDup} 筆跨頁重複已合併｜${AppState.meta.skippedRows} 列已忽略`);
+  const whitelistCount = txns.filter(t => t.whitelistSaved).length;
+  toast(`解析完成：${txns.length} 筆有效分錄（含 ${whitelistCount} 白名單保留）｜${Object.keys(accounts).length} 個科目｜${ig.crossPageDup} 筆跨頁重複已合併｜${AppState.meta.skippedRows} 列已忽略`);
   // Cross-file comparison (must run before saveCompanyData overwrites previous)
   renderCrossFileResult(fileName, txns);
   saveCompanyData(fileName, txns);
@@ -575,10 +655,11 @@ function renderTxnList(el, rows, note = '', opts = {}) {
   }
   el.innerHTML = `<p class="muted">${escapeHtml(note || `顯示 ${show.length}/${rows.length} 筆`)}${hasMore ? ` <span style="color:var(--warn);">（顯示前 ${limit} 筆）</span>` : ''}</p>${show.map((t, idx) => {
     const multiPill = t.hasMultiSummaryInVoucher ? ' <span class="pill" style="background:#fff1f0;color:#cf1322;border-color:#ffa39e;font-size:11px;">多摘要</span>' : '';
+    const wlPill = t.whitelistSaved ? ' <span class="pill" style="background:#f6ffed;color:#237804;border-color:#b7eb8f;font-size:11px;">白名單</span>' : '';
     const normSameAsRaw = (t.summaryNormalized || '') === (t.rawSummary || '');
     const normDisplay = normSameAsRaw ? '（與原始相同）' : escapeHtml(t.summaryNormalized || '');
     const groupSrc = t.manualGroupName ? '手動' : t.keywordGroupName ? '關鍵字規則' : t.defaultGroupName ? '預設規則' : 'none';
-    return `<details class="card" style="margin:6px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}</summary><div style="margin-top:8px;display:grid;gap:4px;font-size:13px;"><div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div><div><strong>正規化摘要：</strong>${normDisplay}</div><div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div><div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div><div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div><div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || t.summaryNormalized || t.rawSummary || '（無）')}</div><div><strong>分組來源：</strong>${escapeHtml(groupSrc)}</div><div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>科目：</strong>${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''} <span class="muted" style="font-size:11px;">[${escapeHtml(t.accountCode)}]</span></div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div><div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div></div></details>`;
+    return `<details class="card" style="margin:6px 0;padding:8px 10px;"><summary style="cursor:pointer;list-style:none;"><strong>${idx + 1}.</strong> ${escapeHtml(t.dateROC)}｜${escapeHtml(t.voucherNo)}｜${escapeHtml(t.accountName)}｜${escapeHtml((t.rawSummary || t.summary || '(空白摘要)').slice(0, 60))}｜${fmtSigned(getSignedAmount(t))}${multiPill}${wlPill}</summary><div style="margin-top:8px;display:grid;gap:4px;font-size:13px;"><div><strong>原始摘要：</strong>${escapeHtml(t.rawSummary || t.summary || '(空白摘要)')}</div><div><strong>正規化摘要：</strong>${normDisplay}</div><div><strong>預設分組：</strong>${escapeHtml(t.defaultGroupName || '（無）')}</div><div><strong>關鍵字分組：</strong>${escapeHtml(t.keywordGroupName || '（無）')}</div><div><strong>手動分組：</strong>${escapeHtml(t.manualGroupName || '（無）')}</div><div><strong>有效分組：</strong>${escapeHtml(t.effectiveGroupName || t.summaryNormalized || t.rawSummary || '（無）')}</div><div><strong>分組來源：</strong>${escapeHtml(groupSrc)}</div><div><strong>傳票號碼：</strong>${escapeHtml(t.voucherNo)}</div><div><strong>日期：</strong>${escapeHtml(t.dateROC)} (${escapeHtml(t.dateISO)})</div><div><strong>科目：</strong>${escapeHtml(t.accountName)}${t.accountNormalSide ? `（${escapeHtml(t.accountNormalSide)}）` : ''} <span class="muted" style="font-size:11px;">[${escapeHtml(t.accountCode)}]</span></div><div><strong>借方 / 貸方：</strong>${fmtAmount(t.debit)} / ${fmtAmount(t.credit)}</div><div><strong>金額(符號)：</strong>${fmtSigned(getSignedAmount(t))}</div><div><strong>餘額：</strong>${fmtAmount(t.balance)}</div><div><strong>多摘要傳票：</strong>${t.hasMultiSummaryInVoucher ? '是' : '否'}</div>${t.whitelistSaved ? '<div><strong>白名單保留：</strong>是</div>' : ''}</div></details>`;
   }).join('')}`;
 }
 
@@ -875,6 +956,234 @@ function renderKeywordRuleList() {
   });
 }
 
+// ---- Patch 3: F1 Dual-column comparison view ----
+let _f1DualView = false;
+
+function renderF1DualView(txns) {
+  if (!dom.f1Result) return;
+  const byDefault = new Map();
+  const byEffective = new Map();
+  for (const t of txns) {
+    const dk = t.defaultGroupName || '（未分組）';
+    const ek = t.effectiveGroupName || '（未分組）';
+    if (!byDefault.has(dk)) byDefault.set(dk, []);
+    if (!byEffective.has(ek)) byEffective.set(ek, []);
+    byDefault.get(dk).push(t);
+    byEffective.get(ek).push(t);
+  }
+
+  function renderGroupList(groupMap) {
+    return Array.from(groupMap.entries()).map(([name, rows]) => {
+      const diffCount = rows.filter(t => t.defaultGroupName !== t.effectiveGroupName).length;
+      const diffBadge = diffCount > 0 ? `<span class="pill" style="background:#fffbe6;color:#d46b08;border-color:#ffd666;font-size:11px;">&#9889; ${diffCount} 筆改變</span>` : '';
+      const rowsHtml = rows.slice(0, 20).map(t => {
+        const changed = t.defaultGroupName !== t.effectiveGroupName;
+        return `<div style="padding:4px 6px;border-bottom:1px solid var(--line2);font-size:12px;${changed ? 'background:#fffbe6;' : ''}">
+          <span>${escapeHtml((t.rawSummary || t.summary || '').slice(0, 50))}</span>
+          ${changed ? `<span class="pill" style="font-size:10px;background:#fff7e6;color:#d46b08;border-color:#ffd666;margin-left:4px;">&rarr;${escapeHtml(t.effectiveGroupName || '')}</span>` : ''}
+          ${t.hasMultiSummaryInVoucher ? '<span class="pill" style="font-size:10px;background:#fff1f0;color:#cf1322;border-color:#ffa39e;margin-left:4px;">多摘要</span>' : ''}
+        </div>`;
+      }).join('');
+      const more = rows.length > 20 ? `<div class="muted" style="font-size:11px;padding:4px 6px;">…另 ${rows.length - 20} 筆</div>` : '';
+      return `<div class="card" style="margin-bottom:8px;padding:8px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px;">${escapeHtml(name)} <span class="pill">${rows.length}筆</span> ${diffBadge}</div>
+        ${rowsHtml}${more}
+      </div>`;
+    }).join('');
+  }
+
+  dom.f1Result.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div class="list-title" style="margin-top:0;">預設分組 (${byDefault.size} 組)</div>
+        <div style="max-height:600px;overflow-y:auto;">${renderGroupList(byDefault)}</div>
+      </div>
+      <div>
+        <div class="list-title" style="margin-top:0;">有效分組 (${byEffective.size} 組)</div>
+        <div style="max-height:600px;overflow-y:auto;">${renderGroupList(byEffective)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ---- Patch 3: Auto rule suggestion ----
+function suggestKeywordRules(txns) {
+  const ungrouped = txns.filter(t => !t.keywordGroupName && !t.defaultGroupName);
+  if (!ungrouped.length) return [];
+
+  const tokenFreq = new Map();
+  const tokenTxns = new Map();
+
+  for (const t of ungrouped) {
+    const text = t.summaryNormalized || t.rawSummary || '';
+    const tokens = [];
+    // Chinese phrases (2-8 chars)
+    const phrases = text.match(/[\u4e00-\u9fff]{2,8}/g) || [];
+    tokens.push(...phrases);
+    // Deduplicate per transaction
+    const seen = new Set();
+    for (const tok of tokens) {
+      if (seen.has(tok)) continue;
+      seen.add(tok);
+      tokenFreq.set(tok, (tokenFreq.get(tok) || 0) + 1);
+      if (!tokenTxns.has(tok)) tokenTxns.set(tok, []);
+      tokenTxns.get(tok).push(t);
+    }
+  }
+
+  const stopWords = new Set(['的', '了', '和', '與', '及', '或', '在', '有', '是', '為', '以', '對', '等', '年', '月', '日', '期', '號']);
+  return Array.from(tokenFreq.entries())
+    .filter(([tok, count]) => count >= 2 && !stopWords.has(tok) && tok.length >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([tok, count]) => ({
+      keyword: tok,
+      count,
+      samples: (tokenTxns.get(tok) || []).slice(0, 5).map(t => t.rawSummary || t.summary),
+      suggestedGroup: tok,
+    }));
+}
+
+function renderAutoSuggestPanel(txns) {
+  const el = dom.f1AutoSuggestPanel;
+  if (!el) return;
+  el.style.display = '';
+  const suggestions = suggestKeywordRules(txns);
+  if (!suggestions.length) {
+    el.innerHTML = '<div class="muted">目前沒有足夠的未分組摘要可提供建議，或所有摘要均已分組。</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div style="font-weight:600;margin-bottom:8px;">自動規則候選（共 ${suggestions.length} 條）</div>
+    ${suggestions.map((s, i) => `
+      <div class="card" style="margin-bottom:6px;padding:8px;display:flex;gap:10px;align-items:flex-start;">
+        <div style="flex:1;">
+          <div style="font-size:13px;font-weight:600;">${escapeHtml(s.keyword)} <span class="pill">${s.count}筆</span></div>
+          <div class="muted" style="font-size:12px;margin-top:4px;">樣本：${s.samples.map(r => `<em>${escapeHtml(String(r || '').slice(0, 30))}</em>`).join('、')}</div>
+          <div style="margin-top:4px;display:flex;gap:6px;align-items:center;">
+            <span class="muted" style="font-size:12px;">加入群組：</span>
+            <input data-suggest-target="${i}" type="text" value="${escapeHtml(s.suggestedGroup)}" style="font-size:12px;padding:2px 6px;width:120px;" />
+          </div>
+        </div>
+        <button data-suggest-add="${i}" class="primary" style="font-size:12px;padding:4px 10px;white-space:nowrap;">一鍵加入</button>
+      </div>
+    `).join('')}
+  `;
+
+  el._suggestions = suggestions;
+
+  // Remove old listener by cloning
+  const newEl = el.cloneNode(true);
+  newEl._suggestions = suggestions;
+  el.parentNode.replaceChild(newEl, el);
+  dom.f1AutoSuggestPanel = newEl;
+
+  newEl.addEventListener('click', (e) => {
+    const addIdx = e.target?.dataset?.suggestAdd;
+    if (addIdx == null) return;
+    const idx = parseInt(addIdx);
+    const sug = newEl._suggestions[idx];
+    if (!sug) return;
+    const targetInput = newEl.querySelector(`[data-suggest-target="${idx}"]`);
+    const targetGroup = targetInput ? targetInput.value.trim() : sug.suggestedGroup;
+    if (!targetGroup) { toast('請輸入目標群組名稱', 'WARN'); return; }
+    const rule = {
+      id: Math.random().toString(36).slice(2),
+      name: '自動建議：' + sug.keyword,
+      enabled: true,
+      keywords: [sug.keyword],
+      excludeWords: [],
+      targetGroup,
+      priority: 5,
+      matchMode: 'contains-any',
+    };
+    AppState.grouping.keywordRules.push(rule);
+    saveKeywordRules(AppState.grouping.keywordRules);
+    for (const t of AppState.transactions) {
+      t.keywordGroupName = applyKeywordRules(t.summaryNormalized, AppState.grouping.keywordRules) || '';
+      t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+    }
+    renderWorkbench();
+    renderAutoSuggestPanel(AppState.transactions);
+    toast('規則「' + targetGroup + '」已加入並立即生效');
+  });
+}
+
+// ---- Patch 3: Normalization settings UI ----
+function renderF1NormPanel() {
+  const el = dom.f1NormPanel;
+  if (!el) return;
+  el.style.display = '';
+  const s2 = AppState.normSettings || defaultNormSettings();
+  el.innerHTML = `
+    <div style="font-weight:600;margin-bottom:10px;">正規化設定</div>
+    <div class="grid" style="margin-bottom:10px;">
+      <label style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="normRemoveSerial" ${s2.removeSerialPrefix ? 'checked' : ''} />
+        移除前置序號（123. A001- 等）
+      </label>
+      <label style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="normRemoveDate" ${s2.removeDateSuffix ? 'checked' : ''} />
+        移除尾端日期（114/01/15 等）
+      </label>
+      <label style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="normRemoveCode" ${s2.removeCodePatterns ? 'checked' : ''} />
+        移除括號代碼（(AB-123) 等）
+      </label>
+    </div>
+    <div class="grid" style="margin-bottom:10px;">
+      <label>自訂前置移除 Regex（逗號分隔）
+        <input id="normCustomPrefix" type="text" value="${escapeHtml((s2.customPrefixPatterns || []).join(','))}" placeholder="例：\\d{4}[A-Z]+" />
+      </label>
+      <label>自訂全文移除 Regex（逗號分隔）
+        <input id="normCustomRemove" type="text" value="${escapeHtml((s2.customRemovePatterns || []).join(','))}" placeholder="例：\\s+\\.pdf" />
+      </label>
+    </div>
+    <div class="toolbar">
+      <button id="normApplyBtn" class="primary">套用並重算</button>
+      <button id="normResetBtn">重設預設值</button>
+    </div>
+    <div id="normApplyResult" class="muted" style="margin-top:6px;"></div>
+  `;
+
+  el.querySelector('#normApplyBtn')?.addEventListener('click', () => {
+    const newSettings = {
+      version: 1,
+      removeSerialPrefix: el.querySelector('#normRemoveSerial')?.checked ?? true,
+      removeDateSuffix: el.querySelector('#normRemoveDate')?.checked ?? true,
+      removeCodePatterns: el.querySelector('#normRemoveCode')?.checked ?? true,
+      customPrefixPatterns: (el.querySelector('#normCustomPrefix')?.value || '').split(',').map(x => x.trim()).filter(Boolean),
+      customRemovePatterns: (el.querySelector('#normCustomRemove')?.value || '').split(',').map(x => x.trim()).filter(Boolean),
+    };
+    AppState.normSettings = newSettings;
+    saveNormSettings(newSettings);
+    // Recompute summaryNormalized for all transactions
+    for (const t of AppState.transactions) {
+      t.summaryNormalized = normalizeSummary(t.rawSummary, newSettings);
+      t.keywordGroupName = applyKeywordRules(t.summaryNormalized, AppState.grouping.keywordRules) || '';
+      t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+    }
+    renderWorkbench();
+    const resultEl = el.querySelector('#normApplyResult');
+    if (resultEl) resultEl.textContent = `已重算 ${AppState.transactions.length} 筆分錄的正規化摘要`;
+    toast('正規化設定已套用並重算');
+  });
+
+  el.querySelector('#normResetBtn')?.addEventListener('click', () => {
+    AppState.normSettings = defaultNormSettings();
+    saveNormSettings(AppState.normSettings);
+    renderF1NormPanel();
+    // Recompute
+    for (const t of AppState.transactions) {
+      t.summaryNormalized = normalizeSummary(t.rawSummary, AppState.normSettings);
+      t.keywordGroupName = applyKeywordRules(t.summaryNormalized, AppState.grouping.keywordRules) || '';
+      t.effectiveGroupName = t.manualGroupName || t.keywordGroupName || t.defaultGroupName || t.summaryNormalized || t.rawSummary;
+    }
+    renderWorkbench();
+    toast('已重設為預設值');
+  });
+}
+
 function renderBase() {
   renderAccountSelect(); renderStats(); renderF9AccountSelects();
   const rows = getFilteredTransactions();
@@ -996,6 +1305,21 @@ function bestSummarySimilarityPct(txMap, leftIds, rightIds) {
   return best;
 }
 
+function bestRawSimilarityPct(txMap, leftIds, rightIds) {
+  let best = 0;
+  const left = (leftIds || []).map((id) => txMap.get(id)).filter(Boolean);
+  const right = (rightIds || []).map((id) => txMap.get(id)).filter(Boolean);
+  left.forEach((a) => {
+    right.forEach((b) => {
+      const sa = a.rawSummary || a.summary || '';
+      const sb = b.rawSummary || b.summary || '';
+      const s = jaccard(sa, sb) * 100;
+      if (s > best) best = s;
+    });
+  });
+  return best;
+}
+
 function subsetSumK(cands, target, tol, kMax, timeLimitMs) {
   // cands: [{id, amount}]
   const start = Date.now();
@@ -1054,18 +1378,27 @@ function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, 
 
     const debitIds = best.ids;
     const creditIds = [c.id];
-    const sim = bestSummarySimilarityPct(txMap, debitIds, creditIds);
-    if (sim < th) continue;
+    const normSimScore = bestSummarySimilarityPct(txMap, debitIds, creditIds);
+    const rawSimScore = bestRawSimilarityPct(txMap, debitIds, creditIds);
+    const simScore = Math.max(normSimScore, rawSimScore);
+    const matchBasis = normSimScore > rawSimScore + 5 ? 'summaryNormalized' : rawSimScore > normSimScore + 5 ? 'rawSummary' : 'mixed';
+    if (simScore < th) continue;
 
     const total = sumByIds(txMap, debitIds, 'debit');
     const delta = total - Number(c.credit || 0);
     const voucherMatch = debitIds.some((id) => cleanText(txMap.get(id)?.voucherNo) === cleanText(c.voucherNo));
+    const hasMultiDebit = debitIds.some((id) => txMap.get(id)?.hasMultiSummaryInVoucher);
+    const hasMultiCredit = [c.id].some((id) => txMap.get(id)?.hasMultiSummaryInVoucher);
     const dayDiff = Math.min(...debitIds.map((id) => daysBetween(txMap.get(id)?.date, c.date)).filter((x) => x != null), null);
     suggestions.push({
       id: `s_${c.id}_${Math.random().toString(36).slice(2, 7)}`,
       debitIds,
       creditIds,
-      reason: { kind: `${debitIds.length}→1`, delta, simPct: sim, voucherMatch, dayDiff, target: Number(c.credit || 0) },
+      matchBasis,
+      simScore,
+      rawSimScore,
+      normSimScore,
+      reason: { kind: `${debitIds.length}→1`, delta, simPct: simScore, voucherMatch, dayDiff, target: Number(c.credit || 0), hasMultiDebit, hasMultiCredit },
     });
   }
 
@@ -1084,18 +1417,27 @@ function f2SuggestMatches(rows, tol, thresholdPct = 80, winDays = 14, kMax = 4, 
 
     const debitIds = [d.id];
     const creditIds = best.ids;
-    const sim = bestSummarySimilarityPct(txMap, debitIds, creditIds);
-    if (sim < th) continue;
+    const normSimScore2 = bestSummarySimilarityPct(txMap, debitIds, creditIds);
+    const rawSimScore2 = bestRawSimilarityPct(txMap, debitIds, creditIds);
+    const simScore2 = Math.max(normSimScore2, rawSimScore2);
+    const matchBasis2 = normSimScore2 > rawSimScore2 + 5 ? 'summaryNormalized' : rawSimScore2 > normSimScore2 + 5 ? 'rawSummary' : 'mixed';
+    if (simScore2 < th) continue;
 
     const total = sumByIds(txMap, creditIds, 'credit');
     const delta = Number(d.debit || 0) - total;
     const voucherMatch = creditIds.some((id) => cleanText(txMap.get(id)?.voucherNo) === cleanText(d.voucherNo));
+    const hasMultiDebit2 = [d.id].some((id) => txMap.get(id)?.hasMultiSummaryInVoucher);
+    const hasMultiCredit2 = creditIds.some((id) => txMap.get(id)?.hasMultiSummaryInVoucher);
     const dayDiff = Math.min(...creditIds.map((id) => daysBetween(txMap.get(id)?.date, d.date)).filter((x) => x != null), null);
     suggestions.push({
       id: `s_${d.id}_${Math.random().toString(36).slice(2, 7)}`,
       debitIds,
       creditIds,
-      reason: { kind: `1→${creditIds.length}`, delta, simPct: sim, voucherMatch, dayDiff, target: Number(d.debit || 0) },
+      matchBasis: matchBasis2,
+      simScore: simScore2,
+      rawSimScore: rawSimScore2,
+      normSimScore: normSimScore2,
+      reason: { kind: `1→${creditIds.length}`, delta, simPct: simScore2, voucherMatch, dayDiff, target: Number(d.debit || 0), hasMultiDebit: hasMultiDebit2, hasMultiCredit: hasMultiCredit2 },
     });
   }
 
@@ -1143,10 +1485,20 @@ function renderF2UnmatchedEditor(rows) {
         ${suggestions.map((s) => {
           const d0 = txMap.get(s.debitIds?.[0]);
           const c0 = txMap.get(s.creditIds?.[0]);
-          const label = `${s.reason.kind}｜Δ${fmtAmount(s.reason.delta)}｜${Math.round(s.reason.simPct)}%｜${s.reason.voucherMatch ? '同傳票' : '不同傳票'}｜±${s.reason.dayDiff ?? '-'}天`;
+          const basisLabel = s.matchBasis === 'summaryNormalized' ? '正規化' : s.matchBasis === 'rawSummary' ? '原始' : '混合';
+          const simDisplay = Math.round(s.simScore || s.reason.simPct);
+          const multiTag = (s.reason.hasMultiDebit || s.reason.hasMultiCredit) ? '｜多摘要' : '';
+          const label = `${s.reason.kind}｜Δ${fmtAmount(s.reason.delta)}｜相似度:${simDisplay}%(${basisLabel})｜${s.reason.voucherMatch ? '同傳票' : '不同傳票'}｜±${s.reason.dayDiff ?? '-'}天${multiTag}`;
           const payload = `${(s.debitIds || []).join(',')}|${(s.creditIds || []).join(',')}`;
-          const title = `${(d0?.summary || '').slice(0, 14)} ↔ ${(c0?.summary || '').slice(0, 14)}`;
-          return `<button data-f2-suggest="${escapeHtml(payload)}" title="${escapeHtml(title)}">${escapeHtml(label)}</button> <button data-f2-apply="${escapeHtml(payload)}" title="一鍵套用此建議">⚡套用</button>`;
+          const tooltipText = [
+            `借：${(d0?.rawSummary || d0?.summary || '').slice(0, 40)}`,
+            `貸：${(c0?.rawSummary || c0?.summary || '').slice(0, 40)}`,
+            `配對依據：${s.matchBasis || 'mixed'}`,
+            `原始相似度：${Math.round(s.rawSimScore || 0)}%`,
+            `正規化相似度：${Math.round(s.normSimScore || 0)}%`,
+            s.reason.voucherMatch ? '同傳票' : '不同傳票',
+          ].join('\n');
+          return `<button data-f2-suggest="${escapeHtml(payload)}" title="${escapeHtml(tooltipText)}">${escapeHtml(label)}</button> <button data-f2-apply="${escapeHtml(payload)}" title="一鍵套用此建議">&#9889;套用</button>`;
         }).join('')}
       </div>`
     : `<div class="muted" style="margin-top:6px;">（目前無建議沖帳）</div>`;
@@ -3806,12 +4158,45 @@ function bindEvents() {
     if (dom.kwRuleTarget) dom.kwRuleTarget.value = '';
     toast('規則已新增，分組已即時更新');
   });
+
+  // ---- Patch 3: F1 Dual-view button ----
+  dom.f1DualViewBtn?.addEventListener('click', () => {
+    if (!AppState.transactions.length) { toast('請先上傳檔案', 'WARN'); return; }
+    _f1DualView = !_f1DualView;
+    if (dom.f1DualViewBtn) dom.f1DualViewBtn.classList.toggle('primary', _f1DualView);
+    if (_f1DualView) {
+      renderF1DualView(getFilteredTransactions());
+    } else {
+      // Restore normal view
+      if (AppState.grouping.mode === 'draft') renderF1Draft();
+      else if (AppState.grouping.groups.length) renderF1Output();
+      else if (dom.f1Result) dom.f1Result.innerHTML = '<p class="muted">尚未分組。請先按「預覽分組名稱」。</p>';
+    }
+  });
+
+  // ---- Patch 3: F1 Auto-suggest button ----
+  dom.f1AutoSuggestBtn?.addEventListener('click', () => {
+    if (!AppState.transactions.length) { toast('請先上傳檔案', 'WARN'); return; }
+    const panel = dom.f1AutoSuggestPanel;
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    renderAutoSuggestPanel(getFilteredTransactions());
+  });
+
+  // ---- Patch 3: F1 Norm settings button ----
+  dom.f1NormSettingsBtn?.addEventListener('click', () => {
+    const panel = dom.f1NormPanel;
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    renderF1NormPanel();
+  });
 }
 
 function init() {
   loadUserSettings();
   loadMemoStorage();
   AppState.grouping.keywordRules = loadKeywordRules();
+  AppState.normSettings = loadNormSettings();
   bindEvents();
   renderTodos();
   renderF9Rules();

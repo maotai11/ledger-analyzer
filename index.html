@@ -196,6 +196,22 @@
     .modal-item:hover { background: #f5f8ff; }
     .modal-item input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
     .modal-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    /* ---- Column confirm modal (wide) ---- */
+    .modal-box-wide { width: min(700px, 95vw); }
+    .col-map-row {
+      display: grid; grid-template-columns: 90px 100px 1fr;
+      align-items: center; gap: 10px;
+      padding: 7px 0; border-bottom: 1px solid var(--line2); font-size: 13px;
+    }
+    .col-map-row:last-child { border-bottom: none; }
+    .col-map-label { font-weight: 600; color: var(--ink); }
+    .col-map-sample { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .preset-tag {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: var(--brand-dim); color: var(--brand);
+      border-radius: 12px; padding: 2px 8px; font-size: 12px; margin: 2px 4px 2px 0;
+    }
+
     /* ---- Todo Panel ---- */
     .todo {
       position: fixed; right: 16px; bottom: 16px;
@@ -357,6 +373,7 @@
         <button data-module="f6" title="找出特定頻率分錄的缺失期間">📅 時間斷層</button>
         <button data-module="f14" title="偵測相同傳票號碼的重複分錄">📌 重複傳票</button>
         <button data-module="f18" title="追蹤同摘要金額跨月異動">📈 金額變動</button>
+        <button data-module="f19" title="比較兩份分類帳，找出新增、消失摘要與金額差異">🔀 多檔比較</button>
         <div class="nav-section">進階分析</div>
         <button data-module="f10" title="驗算每張傳票借貸是否平衡">🧾 傳票借貸驗算</button>
         <button data-module="f11" title="科目 × 月份的金額彙總矩陣">📊 月份矩陣</button>
@@ -762,6 +779,34 @@
             <button id="runF13Btn" class="primary">檢視走勢</button>
           </div>
           <div id="f13Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行」。</div></div>
+        </section>
+
+        <section class="card module" id="module-f19">
+          <h3>多檔比較 / 前後期差異</h3>
+          <p class="muted" style="margin-top:0;">比較兩份分類帳，找出新增、消失的摘要群組，以及超過門檻的金額變動。</p>
+          <div class="grid">
+            <label>基準檔（前期 / A 檔）
+              <input id="f19BaseInput" type="file" accept=".xlsx,.xls" />
+            </label>
+            <label>比較檔（本期 / B 檔）
+              <input id="f19TargetInput" type="file" accept=".xlsx,.xls" />
+            </label>
+            <label>金額差異門檻
+              <input id="f19Threshold" type="number" value="1000" min="0" step="100" />
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:8px;cursor:pointer;margin-top:4px;">
+              <input type="checkbox" id="f19SplitByYear" checked />
+              依年度區分摘要
+            </label>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;">
+            <span id="f19BaseStatus" class="muted">基準檔：未載入</span>
+            <span id="f19TargetStatus" class="muted">比較檔：未載入</span>
+          </div>
+          <div class="toolbar">
+            <button id="runF19Btn" class="primary">執行比較</button>
+          </div>
+          <div id="f19Result" style="margin-top:10px;"><div class="info-box info">請分別載入兩份 Excel 分類帳，再按「執行比較」。</div></div>
         </section>
 
         <section class="card module" id="module-f15">

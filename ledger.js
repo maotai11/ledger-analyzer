@@ -10,6 +10,8 @@ const AppState = {
   pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [], reviewed: new Set() }, crossLink: { mode: 'keyword', query: '', results: [] },
   gap: { results: [], periodicSuggestions: [] }, dupVoucher: { results: [] }, trendAlert: { results: [], groups: [], ungrouped: [], copyText: '' }, todos: [],
   memo: { notes: {}, rules: [], missingResults: [] },
+  compare: { baseTxns: [], baseMeta: null, targetTxns: [], targetMeta: null, results: null, threshold: 1000, splitByYear: true },
+  importPreview: null,
 };
 
 const APP_VERSION = '2026.03';
@@ -26,6 +28,7 @@ const OWN_STORAGE_KEYS = [
   'ledger_exclusion_whitelist',
   'memo_notes',
   'memo_rules',
+  'ledger_column_presets',
 ];
 
 const hasFuse = typeof Fuse !== 'undefined';
@@ -142,6 +145,266 @@ function persistOffsetSetting(key, value) {
   try { localStorage.setItem(key, String(value)); } catch { /* ignore */ }
 }
 
+// ---- Column Preset storage ----
+function loadColumnPresets() {
+  try {
+    const raw = localStorage.getItem('ledger_column_presets');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.data)) return [];
+    return parsed.data;
+  } catch { return []; }
+}
+function saveColumnPresets(presets) {
+  try { localStorage.setItem('ledger_column_presets', JSON.stringify({ version: 1, data: Array.isArray(presets) ? presets : [] })); } catch {}
+}
+function computeFingerprint(rows) {
+  const colCount = Math.max(0, ...rows.slice(0, 10).map(r => r.length));
+  const headerTexts = rows.slice(0, 8).flatMap(r => r.map(c => cleanText(c))).filter(Boolean);
+  const headerSet = [...new Set(headerTexts)].sort().slice(0, 30).join('|');
+  return `cols:${colCount}|h:${headerSet}`;
+}
+function matchPreset(presets, fingerprint) {
+  return presets.find(p => p.fingerprint === fingerprint) || null;
+}
+function buildColumnPreview(rows, map) {
+  const fields = ['date', 'voucherNo', 'summary', 'debit', 'credit', 'balance'];
+  const fieldLabels = { date: '日期', voucherNo: '傳票號碼', summary: '摘要', debit: '借方', credit: '貸方', balance: '餘額' };
+  const preview = {};
+  for (const f of fields) {
+    const colIdx = map[f] ?? -1;
+    const samples = [];
+    if (colIdx >= 0) {
+      for (const row of rows) {
+        if (samples.length >= 3) break;
+        const val = cleanText(row[colIdx]);
+        if (val && !samples.includes(val)) samples.push(val);
+      }
+    }
+    preview[f] = { colIdx, samples };
+  }
+  return { fields, fieldLabels, preview };
+}
+function openColumnConfirmModal(rows, initialMap, fileName, presetMatch, arrayBuffer) {
+  const colCount = Math.max(0, ...rows.slice(0, 20).map(r => r.length));
+  const { fields, fieldLabels } = buildColumnPreview(rows, initialMap);
+  const presetHint = presetMatch
+    ? `<div class="info-box ok" style="margin-bottom:8px;">已自動套用 Preset：<strong>${escapeHtml(presetMatch.name)}</strong>，可依需要手動調整。</div>`
+    : '<div class="info-box info" style="margin-bottom:8px;">以下為自動偵測結果，請確認欄位對應後再解析。</div>';
+  function buildRows(map) {
+    const { preview } = buildColumnPreview(rows, map);
+    return fields.map(f => {
+      const { colIdx, samples } = preview[f];
+      const opts = (colIdx < 0 ? ['<option value="-1" selected>（未偵測到）</option>'] : []).concat(
+        Array.from({ length: colCount }, (_, i) => `<option value="${i}"${i === colIdx ? ' selected' : ''}>欄 ${i + 1}</option>`)
+      ).join('');
+      const sampleText = samples.length ? samples.map(s => s.slice(0, 20)).join('、') : '（無樣本）';
+      const sampleClass = samples.length ? '' : ' style="color:var(--danger);"';
+      return `<div class="col-map-row">
+        <div class="col-map-label">${escapeHtml(fieldLabels[f])}</div>
+        <select id="colmap-${f}" style="min-width:80px;">${opts}</select>
+        <div class="col-map-sample muted"${sampleClass}>${escapeHtml(sampleText)}</div>
+      </div>`;
+    }).join('');
+  }
+  const presets = loadColumnPresets();
+  const presetsHtml = presets.length
+    ? `<div style="margin-top:6px;"><span class="muted" style="font-size:12px;">已儲存：</span>${presets.map(p =>
+        `<span class="preset-tag">${escapeHtml(p.name)}<button data-del-preset="${escapeHtml(p.id)}" title="刪除此 Preset" style="padding:0 3px;margin-left:3px;background:none;border:none;cursor:pointer;font-size:11px;">✕</button></span>`
+      ).join('')}</div>`
+    : '';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'colConfirmOverlay';
+  overlay.innerHTML = `<div class="modal-box modal-box-wide">
+    <div class="modal-header">
+      <h4>欄位確認：${escapeHtml(fileName)}</h4>
+      <button id="colConfirmCloseBtn" style="background:none;border:none;font-size:18px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div class="modal-body" style="padding:12px;overflow-y:auto;">
+      ${presetHint}
+      <p class="muted" style="font-size:12px;margin:0 0 8px;">樣本值取自前幾列非空白資料，請確認每個欄位對應正確。</p>
+      <div id="colMapRows">${buildRows(initialMap)}</div>
+      <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;">
+        <label style="flex-direction:row;align-items:center;gap:8px;font-size:13px;">
+          <input type="checkbox" id="colSavePreset" />
+          儲存此對應為 Preset
+          <input type="text" id="colPresetName" placeholder="Preset 名稱（可留空自動命名）" style="flex:1;min-width:0;font-size:12px;" />
+        </label>
+        ${presetsHtml}
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="colAutoDetectBtn">恢復自動偵測</button>
+      <div style="display:flex;gap:8px;">
+        <button id="colConfirmCancelBtn">取消</button>
+        <button id="colConfirmOkBtn" class="primary">確認並解析</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  function readCurrentMap() {
+    const m = { ...initialMap };
+    for (const f of fields) {
+      const sel = overlay.querySelector(`#colmap-${f}`);
+      if (sel) m[f] = Number(sel.value);
+    }
+    return m;
+  }
+  function close() { overlay.remove(); }
+  overlay.querySelector('#colConfirmCloseBtn')?.addEventListener('click', close);
+  overlay.querySelector('#colConfirmCancelBtn')?.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+    const delId = e.target.dataset?.delPreset;
+    if (delId) {
+      const all = loadColumnPresets().filter(p => p.id !== delId);
+      saveColumnPresets(all);
+      e.target.closest('.preset-tag')?.remove();
+      toast('已刪除 Preset');
+    }
+  });
+  overlay.querySelector('#colAutoDetectBtn')?.addEventListener('click', () => {
+    const detected = detectColumnMap(rows);
+    for (const f of fields) {
+      const sel = overlay.querySelector(`#colmap-${f}`);
+      if (sel) sel.value = String(detected[f] ?? -1);
+    }
+    toast('已恢復自動偵測欄位');
+  });
+  overlay.querySelector('#colConfirmOkBtn')?.addEventListener('click', () => {
+    const confirmedMap = readCurrentMap();
+    const savePreset = overlay.querySelector('#colSavePreset')?.checked;
+    if (savePreset) {
+      const fp = computeFingerprint(rows);
+      const rawName = overlay.querySelector('#colPresetName')?.value.trim();
+      const name = rawName || `Preset ${new Date().toLocaleDateString('zh-TW')}`;
+      const existing = loadColumnPresets();
+      const idx = existing.findIndex(p => p.fingerprint === fp);
+      const entry = { id: `preset_${Date.now()}`, name, columnMap: confirmedMap, fingerprint: fp, createdAt: new Date().toISOString() };
+      if (idx >= 0) existing[idx] = entry; else existing.push(entry);
+      saveColumnPresets(existing);
+      toast(`Preset「${name}」已儲存`);
+    }
+    close();
+    try { parseWorkbook(arrayBuffer, fileName, confirmedMap); }
+    catch (err) { toast(`解析失敗：${err.message}`, 'ERROR'); }
+  });
+}
+
+// ---- F19 Multi-file Compare ----
+function parseFileForCompare(arrayBuffer, fileName) {
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+  const map = detectColumnMap(rows);
+  const txns = [];
+  let currentAccount = null;
+  const seen = new Set();
+  for (const row of rows) {
+    const colA = cleanText(row[map.date]);
+    if (!colA) continue;
+    if (looksLikeHeaderRow(colA)) continue;
+    if (colA.startsWith('月計:') || colA.startsWith('累計:')) continue;
+    if (colA === '上期結轉') continue;
+    if (colA.startsWith('項')) {
+      const acc = parseAccountHeader(colA);
+      if (acc) currentAccount = acc;
+      continue;
+    }
+    if (!currentAccount) continue;
+    const voucherNo = cleanText(row[map.voucherNo]);
+    const d = parseROCDate(colA);
+    if (!voucherNo || !d) continue;
+    const debit = map.debit >= 0 ? decToNum(dec(row[map.debit])) : 0;
+    const credit = map.credit >= 0 ? decToNum(dec(row[map.credit])) : 0;
+    const rawSummary = pickSummary(row, map);
+    const dupKey = `${currentAccount.code}||${voucherNo}||${d.dateISO}||${rawSummary}`;
+    if (seen.has(dupKey)) continue;
+    seen.add(dupKey);
+    txns.push({
+      accountCode: currentAccount.code, accountName: currentAccount.name,
+      voucherNo, dateISO: d.dateISO, dateROC: d.dateROC, periodROC: d.periodROC,
+      year: d.dateROC.split('-')[0], rawSummary, debit, credit,
+      net: debit - credit,
+    });
+  }
+  return { txns, meta: { company: fileName, txnCount: txns.length } };
+}
+function runF19Compare() {
+  const { baseTxns, targetTxns, threshold, splitByYear } = AppState.compare;
+  if (!baseTxns.length || !targetTxns.length) return toast('請先分別載入基準檔與比較檔', 'WARN');
+  const thr = Math.max(0, Number(threshold) || 1000);
+  function buildIndex(txns) {
+    const idx = new Map();
+    for (const t of txns) {
+      const key = splitByYear ? `${t.accountCode}||${t.rawSummary}||${t.year}` : `${t.accountCode}||${t.rawSummary}`;
+      if (!idx.has(key)) idx.set(key, { accountCode: t.accountCode, accountName: t.accountName, rawSummary: t.rawSummary, year: t.year, total: 0, count: 0 });
+      const e = idx.get(key); e.total += t.net; e.count += 1;
+    }
+    return idx;
+  }
+  const baseIdx = buildIndex(baseTxns);
+  const targetIdx = buildIndex(targetTxns);
+  const added = [], removed = [], changed = [];
+  for (const [key, tEntry] of targetIdx) {
+    if (!baseIdx.has(key)) { added.push({ ...tEntry, key }); }
+    else {
+      const bEntry = baseIdx.get(key);
+      const diff = tEntry.total - bEntry.total;
+      if (Math.abs(diff) >= thr) changed.push({ key, accountCode: tEntry.accountCode, accountName: tEntry.accountName, rawSummary: tEntry.rawSummary, year: tEntry.year, baseTotal: bEntry.total, targetTotal: tEntry.total, diff, baseCount: bEntry.count, targetCount: tEntry.count });
+    }
+  }
+  for (const [key, bEntry] of baseIdx) { if (!targetIdx.has(key)) removed.push({ ...bEntry, key }); }
+  AppState.compare.results = { added, removed, changed };
+  renderF19Results();
+}
+function renderF19Results() {
+  const el = document.getElementById('f19Result');
+  if (!el) return;
+  const { results, baseMeta, targetMeta, splitByYear, threshold, baseTxns, targetTxns } = AppState.compare;
+  if (!results) { el.innerHTML = '<p class="muted">請先執行比較。</p>'; return; }
+  const { added, removed, changed } = results;
+  const yearTh = splitByYear ? '<th>年度</th>' : '';
+  const yearTd = (r) => splitByYear ? `<td>${escapeHtml(r.year || '—')}</td>` : '';
+  const addHtml = added.length
+    ? `<div class="info-box ok" style="margin-bottom:6px;">比較檔新增 ${added.length} 個摘要群組</div><div class="table-wrap"><table><thead><tr><th>科目</th><th>摘要</th>${yearTh}<th class="col-amount">合計</th><th>筆數</th></tr></thead><tbody>${added.map(r => `<tr><td>[${escapeHtml(r.accountCode)}]&nbsp;${escapeHtml(r.accountName)}</td><td>${escapeHtml(r.rawSummary)}</td>${yearTd(r)}<td class="col-amount ok">${fmtAmount(r.total)}</td><td>${r.count}</td></tr>`).join('')}</tbody></table></div>`
+    : '<p class="ok">無新增摘要。</p>';
+  const remHtml = removed.length
+    ? `<div class="info-box warn" style="margin-bottom:6px;">基準檔有、比較檔無 ${removed.length} 個摘要群組</div><div class="table-wrap"><table><thead><tr><th>科目</th><th>摘要</th>${yearTh}<th class="col-amount">合計</th><th>筆數</th></tr></thead><tbody>${removed.map(r => `<tr><td>[${escapeHtml(r.accountCode)}]&nbsp;${escapeHtml(r.accountName)}</td><td>${escapeHtml(r.rawSummary)}</td>${yearTd(r)}<td class="col-amount danger">${fmtAmount(r.total)}</td><td>${r.count}</td></tr>`).join('')}</tbody></table></div>`
+    : '<p class="ok">無消失摘要。</p>';
+  const chgHtml = changed.length
+    ? `<div class="info-box warn" style="margin-bottom:6px;">金額差異 ≥ ${fmtAmount(threshold)} 者：${changed.length} 個</div><div class="table-wrap"><table><thead><tr><th>科目</th><th>摘要</th>${yearTh}<th class="col-amount">基準金額</th><th class="col-amount">比較金額</th><th class="col-amount">差異</th></tr></thead><tbody>${changed.map(r => `<tr><td>[${escapeHtml(r.accountCode)}]&nbsp;${escapeHtml(r.accountName)}</td><td>${escapeHtml(r.rawSummary)}</td>${yearTd(r)}<td class="col-amount">${fmtAmount(r.baseTotal)}</td><td class="col-amount">${fmtAmount(r.targetTotal)}</td><td class="col-amount ${r.diff > 0 ? 'ok' : 'danger'}">${fmtSigned(r.diff)}</td></tr>`).join('')}</tbody></table></div>`
+    : '<p class="ok">無超過門檻的金額差異。</p>';
+  el.innerHTML = `<p class="muted" style="font-size:12px;">基準：${escapeHtml(baseMeta?.company || '(未載入)')}（${(baseTxns||[]).length} 筆）｜比較：${escapeHtml(targetMeta?.company || '(未載入)')}（${(targetTxns||[]).length} 筆）｜${splitByYear ? '依年度區分' : '不依年度'}</p>
+  <details open style="margin:8px 0;"><summary style="cursor:pointer;font-weight:600;">新增摘要（${added.length}）</summary><div style="padding:8px 0;">${addHtml}</div></details>
+  <details open style="margin:8px 0;"><summary style="cursor:pointer;font-weight:600;">消失摘要（${removed.length}）</summary><div style="padding:8px 0;">${remHtml}</div></details>
+  <details open style="margin:8px 0;"><summary style="cursor:pointer;font-weight:600;">金額變動（${changed.length}）</summary><div style="padding:8px 0;">${chgHtml}</div></details>`;
+}
+
+// ---- Cross-module Navigation ----
+function navigateToModule(moduleId, filters = {}) {
+  dom.navButtons.forEach(b => b.classList.toggle('active', b.dataset.module === moduleId));
+  dom.modules.forEach(m => m.classList.toggle('active', m.id === `module-${moduleId}`));
+  if (filters.keyword != null) dom.keywordInput.value = filters.keyword;
+  if (filters.accountCode != null) {
+    const opt = dom.accountSelect.querySelector(`option[value="${CSS.escape(filters.accountCode)}"]`);
+    if (opt) { dom.accountSelect.value = filters.accountCode; saveCurrentGroupingState(); loadGroupingState(currentGroupingKey()); }
+  }
+  if (moduleId === 'f13' && dom.f13AccountSelect) {
+    if (filters.accountCode) dom.f13AccountSelect.value = filters.accountCode;
+    setTimeout(runF13, 60);
+  } else if (moduleId === 'f10') {
+    if (filters.voucherNo) dom.keywordInput.value = filters.voucherNo;
+    setTimeout(runF10, 60);
+  } else if (moduleId === 'f4') {
+    setTimeout(runF4, 60);
+  } else if (moduleId === 'overview') {
+    renderBase();
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 const dom = {
   fileInput: document.getElementById('fileInput'), resetBtn: document.getElementById('resetBtn'), metaText: document.getElementById('metaText'),
   stats: document.getElementById('stats'), accountSelect: document.getElementById('accountSelect'), keywordInput: document.getElementById('keywordInput'),
@@ -199,6 +462,7 @@ const dom = {
   f1AutoSuggestPanel: document.getElementById('f1AutoSuggestPanel'),
   f1NormSettingsBtn: document.getElementById('f1NormSettingsBtn'),
   f1NormPanel: document.getElementById('f1NormPanel'),
+  f19Result: document.getElementById('f19Result'),
 };
 
 function escapeHtml(v) { return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
@@ -550,11 +814,11 @@ function rowMatchesWhitelist(row, whitelist) {
   return whitelist.some(wlEntry => joined.includes(wlEntry) || wlEntry.includes(joined.slice(0, 20)));
 }
 
-function parseWorkbook(arrayBuffer, fileName) {
+function parseWorkbook(arrayBuffer, fileName, columnMapOverride) {
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-  const map = detectColumnMap(rows);
+  const map = columnMapOverride || detectColumnMap(rows);
 
   const whitelist = loadWhitelist();
   const accounts = {}; const txns = []; const seen = new Set();
@@ -2705,6 +2969,10 @@ function runF14() {
         ${r.crossAccount ? `<span class="pill" style="font-size:11px;background:#f0f5ff;color:#2f54eb;">跨${r.accountCount}科目</span>` : ''}
         <span class="muted" style="font-size:11px;">借 ${fmtAmount(r.totalDebit)} / 貸 ${fmtAmount(r.totalCredit)}</span>
       </summary>
+      <div style="display:flex;gap:6px;padding:4px 0 8px;">
+        <button class="btn-sm" data-nav-module="f10" data-nav-voucher="${escapeHtml(r.voucherNo)}" title="跳到 F10 驗算此傳票">→ F10 驗算</button>
+        <button class="btn-sm" data-nav-module="f4" title="跳到 F4 異常偵測">→ F4 異常</button>
+      </div>
       ${r.crossAccount ? `<div class="muted" style="font-size:12px;padding:4px 8px;">涉及科目：${escapeHtml(r.accountName)}</div>` : ''}
       <div class="table-wrap" style="margin-top:4px;">
         <table style="min-width:700px;">
@@ -2743,7 +3011,7 @@ function renderF18Groups(rows) {
       ? `<div style="margin:8px 0;"><button data-f18-copy-table="${escapeHtml(g.sourceKeyword || g.name)}" style="margin-bottom:6px;font-size:12px;">複製月份表格（貼入 Excel）</button><div class="table-wrap"><table><thead><tr><th>月份</th><th class="col-amount">金額</th><th class="col-amount">前月</th><th class="col-amount">變動率(%)</th><th>狀態</th></tr></thead><tbody>${trend.monthlyData.map((m) => `<tr><td>${m.period}</td><td class="col-amount">${fmtAmount(m.amount)}</td><td class="col-amount">${m.prevAmount == null ? '—' : fmtAmount(m.prevAmount)}</td><td class="col-amount">${m.changeRate == null ? '—' : `${m.changeRate.toFixed(1)}%`}</td><td>${m.changeRate == null ? '—' : m.flagged ? '<span class="danger">超標</span>' : '<span class="ok">正常</span>'}</td></tr>`).join('')}</tbody></table></div></div>`
       : '<p class="muted">此關鍵字無月資料</p>';
     return `<details class="card" id="${anchorId}" style="margin:8px 0;" open>
-      <summary><strong>群組：</strong><input data-f18-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" />｜筆數 ${txns.length}｜合計 ${fmtSigned(total)} <button data-f18-del-group="${g.id}" style="margin-left:8px;">刪除群組</button></summary>
+      <summary><strong>群組：</strong><input data-f18-rename="${g.id}" value="${escapeHtml(g.name)}" style="margin-left:8px;min-width:180px;" />｜筆數 ${txns.length}｜合計 ${fmtSigned(total)} <button class="btn-sm" data-nav-module="overview" data-nav-keyword="${escapeHtml(g.sourceKeyword || g.name)}" style="margin-left:6px;" title="跳到總覽明細">→ 明細</button> <button data-f18-del-group="${g.id}" style="margin-left:6px;">刪除群組</button></summary>
       <div style="margin-top:8px;"><button data-f18-back="1">回到分組摘要</button></div>
       ${trendHtml}
       <div style="margin-top:8px;"><label><input type="checkbox" data-f18-check-all="${g.id}" /> 全選</label> <select data-f18-batch-target="${g.id}"><option value="">批次移動到...</option>${groupOptions}</select> <button data-f18-batch-move="${g.id}">批次移動</button> <button data-f18-batch-del="${g.id}">批次刪除</button></div>
@@ -3057,6 +3325,7 @@ function renderTrialBalance() {
   <th class="col-amount">期末餘額（計算）</th>
   <th class="col-amount">帳上末筆餘額</th>
   <th>核對</th>
+  <th>跳轉</th>
 </tr></thead><tbody>
 ${rows.map((r) => `<tr>
   <td>${escapeHtml(r.code)}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.normalSide)}</td><td>${r.txnCount}</td>
@@ -3066,6 +3335,7 @@ ${rows.map((r) => `<tr>
   <td class="col-amount">${fmtAmount(r.closing)}</td>
   <td class="col-amount">${r.lastBal === null ? '—' : fmtAmount(r.lastBal)}</td>
   <td>${r.balOk ? '<span class="ok">OK</span>' : '<span class="danger">不一致</span>'}</td>
+  <td><button class="btn-sm" data-nav-module="f13" data-nav-account="${escapeHtml(r.code)}" title="跳到 F13 餘額走勢">→ 走勢</button></td>
 </tr>`).join('')}
 </tbody><tfoot><tr style="font-weight:600;background:#f7fafe;">
   <td colspan="5">合計</td>
@@ -3369,7 +3639,19 @@ function copyText(text, label = '已複製') {
 function bindEvents() {
   dom.fileInput.addEventListener('change', async (e) => {
     const file = e.target.files?.[0]; if (!file) return;
-    try { parseWorkbook(await file.arrayBuffer(), file.name); } catch (err) { toast(`解析失敗：${err.message}`, 'ERROR'); }
+    dom.fileInput.value = '';
+    try {
+      const ab = await file.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+      const detectedMap = detectColumnMap(rows);
+      const fp = computeFingerprint(rows);
+      const presets = loadColumnPresets();
+      const presetMatch = matchPreset(presets, fp);
+      const initialMap = presetMatch ? { ...detectedMap, ...presetMatch.columnMap } : detectedMap;
+      openColumnConfirmModal(rows, initialMap, file.name, presetMatch, ab);
+    } catch (err) { toast(`讀取失敗：${err.message}`, 'ERROR'); }
   });
 
   dom.resetBtn.addEventListener('click', () => location.reload());
@@ -4796,6 +5078,48 @@ function bindEvents() {
     if (!panel) return;
     if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
     renderF1NormPanel();
+  });
+
+  // ---- Cross-module navigation (event delegation) ----
+  document.addEventListener('click', (e) => {
+    const navBtn = e.target.closest('[data-nav-module]');
+    if (!navBtn) return;
+    e.stopPropagation();
+    const moduleId = navBtn.dataset.navModule;
+    const filters = {};
+    if (navBtn.dataset.navAccount) filters.accountCode = navBtn.dataset.navAccount;
+    if (navBtn.dataset.navVoucher) filters.voucherNo = navBtn.dataset.navVoucher;
+    if (navBtn.dataset.navKeyword) filters.keyword = navBtn.dataset.navKeyword;
+    navigateToModule(moduleId, filters);
+  });
+
+  // ---- F19 Multi-file compare ----
+  document.getElementById('f19BaseInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try {
+      const result = parseFileForCompare(await file.arrayBuffer(), file.name);
+      AppState.compare.baseTxns = result.txns;
+      AppState.compare.baseMeta = result.meta;
+      const el = document.getElementById('f19BaseStatus');
+      if (el) el.textContent = `基準檔：${file.name}（${result.txns.length} 筆）`;
+      toast(`基準檔已載入：${result.txns.length} 筆`);
+    } catch (err) { toast(`基準檔讀取失敗：${err.message}`, 'ERROR'); }
+  });
+  document.getElementById('f19TargetInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try {
+      const result = parseFileForCompare(await file.arrayBuffer(), file.name);
+      AppState.compare.targetTxns = result.txns;
+      AppState.compare.targetMeta = result.meta;
+      const el = document.getElementById('f19TargetStatus');
+      if (el) el.textContent = `比較檔：${file.name}（${result.txns.length} 筆）`;
+      toast(`比較檔已載入：${result.txns.length} 筆`);
+    } catch (err) { toast(`比較檔讀取失敗：${err.message}`, 'ERROR'); }
+  });
+  document.getElementById('runF19Btn')?.addEventListener('click', () => {
+    AppState.compare.threshold = Number(document.getElementById('f19Threshold')?.value || 1000);
+    AppState.compare.splitByYear = document.getElementById('f19SplitByYear')?.checked ?? true;
+    runF19Compare();
   });
 }
 

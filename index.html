@@ -698,10 +698,16 @@
 
         <section class="card module" id="module-f14">
           <h3>重複傳票號碼偵測</h3>
+          <div class="info-box info" style="margin-bottom:8px;font-size:12px;">
+            <strong>同科目模式</strong>：同傳票同科目出現 2+ 次。
+            <strong>跨科目模式</strong>：同傳票跨多科目（正常複式記帳）。
+            <strong>嚴格模式</strong>：傳票＋摘要＋金額全同才算，專抓真正誤重複輸入的分錄。
+          </div>
           <div class="toolbar">
             <button id="runF14Btn" class="primary">掃描重複傳票</button>
             <button id="exportF14Btn">匯出 CSV</button>
             <button id="f14ModeBtn">目前：同科目模式</button>
+            <button id="f14StrictBtn" title="開啟後傳票＋摘要＋金額三者全同才算重複">嚴格：同傳票＋摘要＋金額</button>
           </div>
           <div id="f14Result" style="margin-top:10px;"></div>
           <div class="list-title">未命中重複傳票清單</div>

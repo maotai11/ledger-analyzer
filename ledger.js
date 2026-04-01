@@ -427,6 +427,7 @@ const dom = {
   f6Result: document.getElementById('f6Result'), f6List: document.getElementById('f6List'), runF14Btn: document.getElementById('runF14Btn'),
   exportF14Btn: document.getElementById('exportF14Btn'), f14Result: document.getElementById('f14Result'), f14List: document.getElementById('f14List'),
   f14ModeBtn: document.getElementById('f14ModeBtn'),
+  f14StrictBtn: document.getElementById('f14StrictBtn'),
   f18Keyword: document.getElementById('f18Keyword'), f18Threshold: document.getElementById('f18Threshold'), runF18Btn: document.getElementById('runF18Btn'),
   copyF18TextBtn: document.getElementById('copyF18TextBtn'), exportF18Btn: document.getElementById('exportF18Btn'), f18Result: document.getElementById('f18Result'), f18List: document.getElementById('f18List'),
   runF7Btn: document.getElementById('runF7Btn'), exportF7Btn: document.getElementById('exportF7Btn'), f7Result: document.getElementById('f7Result'),
@@ -2624,6 +2625,8 @@ function renderF3Groups(rows, noteText = '') {
   renderTxnList(dom.f3List, ungroupedRows, `未分組 ${ungroupedRows.length} 筆`);
 }
 
+let _f3ManualPicks = new Set(); // IDs manually checked by user
+
 function renderF3CandidateList(rows) {
   const direction = dom.f3Direction.value;
   const minAmt = Number(dom.f3MinAmt?.value || 0) || 0;
@@ -2631,17 +2634,113 @@ function renderF3CandidateList(rows) {
   let cands = rows.filter((t) => direction === 'debit' ? t.debit > 0 : t.credit > 0);
   if (minAmt > 0) cands = cands.filter((t) => (direction === 'debit' ? t.debit : t.credit) >= minAmt);
   if (maxAmt > 0) cands = cands.filter((t) => (direction === 'debit' ? t.debit : t.credit) <= maxAmt);
-  const show = cands.slice(0, 300);
-  dom.f3List.innerHTML = `<p class="muted">候選 ${cands.length} 筆（點擊金額欄可自動填入目標）${cands.length > 300 ? '｜僅顯示前 300 筆' : ''}</p>
+  const show = cands.slice(0, 500);
+  const pickCount = show.filter(t => _f3ManualPicks.has(t.id)).length +
+    [..._f3ManualPicks].filter(id => !show.some(t => t.id === id) && cands.some(t => t.id === id)).length;
+  const allShowPicked = show.length > 0 && show.every(t => _f3ManualPicks.has(t.id));
+
+  dom.f3List.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:8px;background:#f8fafd;border-radius:8px;border:1px solid var(--line2);">
+      <span class="muted" style="font-size:13px;">候選 <strong>${cands.length}</strong> 筆${cands.length > 500 ? '（顯示前 500）' : ''}｜已勾選 <strong id="f3PickCount">${_f3ManualPicks.size}</strong> 筆</span>
+      <button id="f3SelectAll" class="btn-sm" title="全選目前顯示的筆數">全選顯示（${show.length}）</button>
+      <button id="f3ClearPicks" class="btn-sm" ${_f3ManualPicks.size === 0 ? 'disabled' : ''}>清除勾選</button>
+      <button id="f3RunPicks" class="btn-sm${_f3ManualPicks.size > 0 ? ' primary' : ''}" ${_f3ManualPicks.size === 0 ? 'disabled' : ''}>
+        ✔ 用勾選計算（${_f3ManualPicks.size}筆）
+      </button>
+    </div>
     <div class="table-wrap"><table><thead><tr>
+      <th style="width:28px;"><input type="checkbox" id="f3CheckAllBox" ${allShowPicked ? 'checked' : ''} title="全選/取消全選目前顯示" /></th>
       <th class="col-date">日期</th><th class="col-voucher">傳票</th><th>科目</th><th class="col-summary">摘要</th>
-      <th class="col-amount" title="點擊金額可填入目標">金額 ▶ 點填目標</th>
+      <th class="col-amount" title="點擊金額可填入目標">金額 ▶ 點填</th>
     </tr></thead><tbody>
     ${show.map((t) => {
       const amt = direction === 'debit' ? t.debit : t.credit;
-      return `<tr><td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td><td>${escapeHtml(t.accountName)} <span class="muted" style="font-size:11px;">(${escapeHtml(t.accountCode)})</span></td><td>${escapeHtml((t.rawSummary || t.summary || '(空白)').slice(0, 35))}</td><td class="col-amount" style="cursor:pointer;color:#165dff;text-decoration:underline dotted;" data-f3-set-target="${amt}">${fmtAmount(amt)}</td></tr>`;
+      const checked = _f3ManualPicks.has(t.id);
+      return `<tr style="${checked ? 'background:#f0f5ff;' : ''}">
+        <td><input type="checkbox" class="f3-pick-cb" data-id="${escapeHtml(t.id)}" ${checked ? 'checked' : ''} /></td>
+        <td>${escapeHtml(t.dateROC)}</td><td>${escapeHtml(t.voucherNo)}</td>
+        <td>${escapeHtml(t.accountName)}<span class="muted" style="font-size:11px;"> (${escapeHtml(t.accountCode)})</span></td>
+        <td>${escapeHtml((t.rawSummary || t.summary || '(空白)').slice(0, 35))}</td>
+        <td class="col-amount" style="cursor:pointer;color:#165dff;text-decoration:underline dotted;" data-f3-set-target="${amt}">${fmtAmount(amt)}</td>
+      </tr>`;
     }).join('')}
     </tbody></table></div>`;
+
+  // Header checkbox toggle
+  dom.f3List.querySelector('#f3CheckAllBox')?.addEventListener('change', (e) => {
+    if (e.target.checked) show.forEach(t => _f3ManualPicks.add(t.id));
+    else show.forEach(t => _f3ManualPicks.delete(t.id));
+    renderF3CandidateList(rows);
+  });
+  // Individual checkboxes — lightweight update (no full re-render)
+  dom.f3List.querySelectorAll('.f3-pick-cb').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      if (e.target.checked) _f3ManualPicks.add(e.target.dataset.id);
+      else _f3ManualPicks.delete(e.target.dataset.id);
+      const countEl = document.getElementById('f3PickCount');
+      if (countEl) countEl.textContent = _f3ManualPicks.size;
+      const runBtn = document.getElementById('f3RunPicks');
+      if (runBtn) { runBtn.textContent = `✔ 用勾選計算（${_f3ManualPicks.size}筆）`; runBtn.disabled = _f3ManualPicks.size === 0; runBtn.classList.toggle('primary', _f3ManualPicks.size > 0); }
+      const clearBtn = document.getElementById('f3ClearPicks');
+      if (clearBtn) clearBtn.disabled = _f3ManualPicks.size === 0;
+      const row = e.target.closest('tr');
+      if (row) row.style.background = e.target.checked ? '#f0f5ff' : '';
+    });
+  });
+  dom.f3List.querySelector('#f3SelectAll')?.addEventListener('click', () => {
+    show.forEach(t => _f3ManualPicks.add(t.id)); renderF3CandidateList(rows);
+  });
+  dom.f3List.querySelector('#f3ClearPicks')?.addEventListener('click', () => {
+    _f3ManualPicks.clear(); renderF3CandidateList(rows);
+  });
+  dom.f3List.querySelector('#f3RunPicks')?.addEventListener('click', () => runF3WithPicks(rows));
+}
+
+function runF3WithPicks(allRows) {
+  const txMap = new Map(allRows.map(t => [t.id, t]));
+  const direction = dom.f3Direction.value;
+  const target = Number(dom.f3Target.value || 0);
+  const tolerance = Number(dom.f3Tolerance.value || 0.01);
+  const pickedIds = [..._f3ManualPicks].filter(id => txMap.has(id));
+  if (!pickedIds.length) return toast('請先勾選要計算的分錄', 'WARN');
+  if (pickedIds.length > 200) {
+    if (!confirm(`已勾選 ${pickedIds.length} 筆（超過 200），子集合計算可能需要較長時間，是否繼續？`)) return;
+  }
+  const candidates = pickedIds.map(id => {
+    const t = txMap.get(id);
+    return { id: t.id, amount: direction === 'debit' ? t.debit : t.credit };
+  }).filter(c => c.amount > 0);
+  if (!candidates.length) return toast('勾選的分錄中無有效金額', 'WARN');
+  AppState.pool.candidateIds = candidates.map(c => c.id);
+  const runSync = () => {
+    dom.runF3Btn.disabled = false;
+    const r = bruteSubset(candidates, target, tolerance, 5000);
+    AppState.pool.results = r.results;
+    buildF3GroupsFromResults(allRows);
+    renderF3CandidateList(allRows);
+    renderF3Groups(allRows, r.results.length
+      ? `勾選模式｜結果 ${r.results.length} 組｜耗時 ${r.elapsed}ms${r.interrupted ? '｜已中斷' : ''}`
+      : `勾選模式｜命中 0 組（${candidates.length} 筆）`);
+  };
+  if (location.protocol === 'file:') { runSync(); return; }
+  try {
+    if (!poolWorker) poolWorker = createPoolWorker();
+    if (!poolWorker) { runSync(); return; }
+    dom.runF3Btn.disabled = true;
+    dom.f3Result.innerHTML = `<p class="muted">計算中（勾選 ${candidates.length} 筆）...</p>`;
+    const wt = setTimeout(() => { poolWorker = null; runSync(); }, 10000);
+    poolWorker.onerror = () => { clearTimeout(wt); poolWorker = null; runSync(); };
+    poolWorker.onmessage = (ev) => {
+      clearTimeout(wt); dom.runF3Btn.disabled = false;
+      AppState.pool.results = ev.data.results || [];
+      buildF3GroupsFromResults(allRows);
+      renderF3CandidateList(allRows);
+      renderF3Groups(allRows, AppState.pool.results.length
+        ? `勾選模式｜結果 ${AppState.pool.results.length} 組｜耗時 ${ev.data.elapsed}ms${ev.data.interrupted ? '｜已中斷' : ''}`
+        : `勾選模式｜命中 0 組（${candidates.length} 筆）`);
+    };
+    poolWorker.postMessage({ candidates, target, tolerance, timeLimit: 5000 });
+  } catch { poolWorker = null; runSync(); }
 }
 
 function runF3() {
@@ -2663,7 +2762,8 @@ function runF3() {
     AppState.pool.groups = [];
     AppState.pool.ungrouped = AppState.pool.candidateIds.slice();
     AppState.pool.copyText = '';
-    dom.f3Result.innerHTML = `<p class="danger">目前 ${candidates.length} 筆，超過 200 筆上限。請縮小科目範圍或設定金額上下限篩選。</p>`;
+    dom.f3Result.innerHTML = `<div class="info-box warn">目前 <strong>${candidates.length}</strong> 筆超過 200 筆運算上限。
+      可：① 縮小科目 / 調整金額上下限 → 重新計算　② 直接在下方清單中<strong>勾選</strong>想計算的筆數 → 點「✔ 用勾選計算」</div>`;
     renderF3CandidateList(rows);
     return;
   }
@@ -2923,10 +3023,12 @@ function runF14() {
   let results = [];
 
   if (!_f14CrossAccount) {
-    // Same-account mode: group by accountCode + voucherNo (existing behavior, relaxed to count>1)
+    // Same-account mode; strict: also require same summary + same amount
     const groupMap = new Map();
     for (const t of txns) {
-      const key = `${t.accountCode}||${t.voucherNo}`;
+      const key = _f14StrictMode
+        ? `${t.accountCode}||${t.voucherNo}||${(t.rawSummary||t.summary||'').slice(0,60)}||${Math.round((t.debit||0)*100)}||${Math.round((t.credit||0)*100)}`
+        : `${t.accountCode}||${t.voucherNo}`;
       if (!groupMap.has(key)) groupMap.set(key, []);
       groupMap.get(key).push(t);
     }
@@ -2988,13 +3090,12 @@ function runF14() {
 
   AppState.dupVoucher.results = results;
 
+  const modeLabel = (_f14CrossAccount ? '跨科目' : '同科目') + (_f14StrictMode ? '＋嚴格(同摘要＋金額)' : '');
   if (!results.length) {
-    dom.f14Result.innerHTML = `<div class="info-box ok">✓ 未發現${_f14CrossAccount ? '跨科目' : '同科目'}重複傳票。</div>`;
+    dom.f14Result.innerHTML = `<div class="info-box ok">✓ 未發現${modeLabel}重複傳票。</div>`;
     renderTxnList(dom.f14List, txns, `未命中重複傳票 ${txns.length} 筆`);
     return;
   }
-
-  const modeLabel = _f14CrossAccount ? '跨科目' : '同科目';
 
   const resultHtml = results.map(r => {
     const hasDiffSummary = new Set(r.transactions.map(t => t.rawSummary || t.summary)).size > 1;
@@ -3546,8 +3647,9 @@ function runF13() {
 }
 // ---- end F13 ----
 
-// ---- F14 Cross-account mode ----
+// ---- F14 Cross-account mode + strict mode ----
 let _f14CrossAccount = false;
+let _f14StrictMode = false; // 嚴格：同傳票＋同摘要＋同金額才算重複
 
 // ---- F15 摘要頻率分析 ----
 let _f15UseNormalized = false;
@@ -3782,6 +3884,12 @@ function bindEvents() {
   dom.f14ModeBtn?.addEventListener('click', () => {
     _f14CrossAccount = !_f14CrossAccount;
     dom.f14ModeBtn.textContent = _f14CrossAccount ? '目前：跨科目模式' : '目前：同科目模式';
+    if (AppState.transactions.length) runF14();
+  });
+  dom.f14StrictBtn?.addEventListener('click', () => {
+    _f14StrictMode = !_f14StrictMode;
+    dom.f14StrictBtn.textContent = _f14StrictMode ? '嚴格：同傳票＋摘要＋金額 ✓' : '嚴格：同傳票＋摘要＋金額';
+    dom.f14StrictBtn.classList.toggle('primary', _f14StrictMode);
     if (AppState.transactions.length) runF14();
   });
   dom.runF18Btn.addEventListener('click', runF18);

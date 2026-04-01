@@ -1191,48 +1191,114 @@ function renderWorkbench() {
   });
 }
 
+let _exclFilter = { type: 'non_account', keyword: '' };
+const _EXCL_TYPE_LABEL = { account_header: '科目標頭', page_header: '頁首標頭', month_total: '月計累計', opening_balance: '上期結轉', transaction: '分錄' };
+function exclTypeLabel(t) { return _EXCL_TYPE_LABEL[t] || t || '其他'; }
+
 function renderExclusionViewer() {
   const el = dom.f1ExclusionResult;
   if (!el) return;
-  const rows = AppState.meta.excludedRows || [];
-  if (!rows.length) {
-    el.innerHTML = '<p class="muted">無排除記錄。</p>';
+  const allRows = AppState.meta.excludedRows || [];
+  if (!allRows.length) {
+    el.innerHTML = '<p class="muted">無排除記錄（本次解析無需排除的列）。</p>';
     return;
   }
   const map = AppState.meta.columnMap || {};
+  const accountHdrCount = allRows.filter(r => r.rowType === 'account_header').length;
+  const typeSet = [...new Set(allRows.map(r => r.rowType).filter(Boolean))].sort();
+  const tf = _exclFilter.type;
+  const kf = (_exclFilter.keyword || '').toLowerCase();
+
+  // Build visible list as { idx, row } tuples
+  let visible = allRows.map((row, idx) => ({ idx, row }));
+  if (tf === 'non_account') visible = visible.filter(({ row }) => row.rowType !== 'account_header');
+  else if (tf !== 'all') visible = visible.filter(({ row }) => row.rowType === tf);
+  if (kf) visible = visible.filter(({ row }) => {
+    const c = (row.rawContent || []).join(' ').toLowerCase();
+    return c.includes(kf) || (row.reason || '').toLowerCase().includes(kf);
+  });
+
+  const actionable = visible.filter(({ row: r }) => r.recoverable && !r.whitelisted && !r.restored);
+
+  const typeOpts = [
+    `<option value="non_account"${tf === 'non_account' ? ' selected' : ''}>科目標頭除外（${allRows.length - accountHdrCount}）</option>`,
+    `<option value="all"${tf === 'all' ? ' selected' : ''}>全部（${allRows.length}）</option>`,
+    ...typeSet.map(t => `<option value="${escapeHtml(t)}"${tf === t ? ' selected' : ''}>${escapeHtml(exclTypeLabel(t))}（${allRows.filter(r => r.rowType === t).length}）</option>`),
+  ].join('');
+
+  const rowsHtml = visible.length === 0
+    ? '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px;">此篩選條件無結果</td></tr>'
+    : visible.map(({ idx, row: r }) => {
+        const isAH = r.rowType === 'account_header';
+        const dim = r.whitelisted || r.restored;
+        const ops = isAH
+          ? '<span class="muted" style="font-size:11px;">正常排除</span>'
+          : r.whitelisted
+            ? '<span class="badge-whitelist" style="font-size:11px;">白名單</span>'
+            : r.restored
+              ? '<span class="ok" style="font-size:11px;">已恢復</span>'
+              : `${r.recoverable ? `<button class="btn-sm" data-excl-whitelist="${idx}" title="下次解析自動保留此列">＋白名單</button>` : ''}
+                 <button class="btn-sm" data-excl-restore="${idx}" style="margin-left:4px;" title="暫時加回本次明細">恢復</button>`;
+        return `<tr style="${dim ? 'opacity:0.4;' : ''}${isAH ? 'background:#f8fafe;' : ''}">
+          <td class="muted" style="font-size:11px;text-align:right;">${r.rowIndex + 1}</td>
+          <td><span class="pill" style="${isAH ? 'background:#e8f0ff;color:#2f54eb;border-color:#adc6ff;' : ''}">${escapeHtml(exclTypeLabel(r.rowType))}</span></td>
+          <td style="font-size:12px;color:var(--ink2);">${escapeHtml(r.reason)}</td>
+          <td style="font-size:12px;max-width:280px;word-break:break-word;">${(r.rawContent||[]).filter(Boolean).slice(0,5).map(escapeHtml).join('<span class="muted"> | </span>')}</td>
+          <td style="white-space:nowrap;">${ops}</td>
+        </tr>`;
+      }).join('');
+
   el.innerHTML = `
-    <div class="info-box info" style="margin-bottom:8px;">共 ${rows.length} 列被排除。點「加入白名單」可避免下次誤排；「恢復此列」暫時將此列加回明細並重新分組。</div>
+    <div class="info-box info" style="margin-bottom:10px;">
+      共 <strong>${allRows.length}</strong> 列被排除，其中 <strong>${accountHdrCount}</strong> 筆為科目標頭（結構列，正常排除，不影響分析）。<br>
+      <span class="muted" style="font-size:12px;">「＋白名單」：下次解析自動保留此列至分錄 ｜「恢復」：暫時加回本次明細並重新分組</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+      <select id="exclTypeFilter" style="min-width:170px;">${typeOpts}</select>
+      <input id="exclKwFilter" type="text" placeholder="關鍵字搜尋內容..." value="${escapeHtml(_exclFilter.keyword)}" style="min-width:140px;" />
+      <button id="exclBatchWl" class="btn-sm" ${actionable.length === 0 ? 'disabled' : ''} title="對目前篩選結果中所有可操作列批次加白名單">批次＋白名單（${actionable.length}）</button>
+      <span class="muted" style="font-size:12px;">顯示 ${visible.length} / ${allRows.length}</span>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>列索引</th><th>列型別</th><th>排除原因</th><th>內容預覽</th><th>操作</th>
+          <th style="width:44px;text-align:right;">列#</th>
+          <th style="width:80px;">型別</th>
+          <th style="min-width:120px;">排除原因</th>
+          <th>內容預覽</th>
+          <th style="width:140px;">操作</th>
         </tr></thead>
-        <tbody>
-          ${rows.map((r, i) => `
-            <tr style="${r.whitelisted || r.restored ? 'opacity:0.5;' : ''}">
-              <td>${r.rowIndex + 1}</td>
-              <td><span class="pill">${escapeHtml(r.rowType)}</span></td>
-              <td>${escapeHtml(r.reason)}</td>
-              <td style="font-size:12px;max-width:300px;word-break:break-word;">${r.rawContent.filter(Boolean).slice(0, 5).map(escapeHtml).join(' | ')}</td>
-              <td style="white-space:nowrap;">
-                ${r.recoverable && !r.whitelisted && !r.restored ? `<button data-excl-whitelist="${i}" style="font-size:11px;padding:2px 6px;">加入白名單</button>` : ''}
-                ${!r.restored ? `<button data-excl-restore="${i}" style="font-size:11px;padding:2px 6px;margin-left:4px;" ${r.restored ? 'disabled' : ''}>恢復此列</button>` : '<span class="ok" style="font-size:11px;">已恢復</span>'}
-                ${r.whitelisted ? ' <span class="badge-whitelist">已白名單</span>' : ''}
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
+        <tbody>${rowsHtml}</tbody>
       </table>
-    </div>
-  `;
-  el.addEventListener('click', (e) => {
+    </div>`;
+
+  el.querySelector('#exclTypeFilter')?.addEventListener('change', (e) => {
+    _exclFilter.type = e.target.value; renderExclusionViewer();
+  });
+  el.querySelector('#exclKwFilter')?.addEventListener('input', (e) => {
+    _exclFilter.keyword = e.target.value; renderExclusionViewer();
+  });
+  el.querySelector('#exclBatchWl')?.addEventListener('click', () => {
+    const wl = loadWhitelist();
+    let added = 0;
+    actionable.forEach(({ idx, row: r }) => {
+      allRows[idx].whitelisted = true;
+      wl.push((r.rawContent||[]).filter(Boolean).join('|'));
+      added++;
+    });
+    saveWhitelist(wl);
+    renderExclusionViewer();
+    toast(`已批次加入白名單：${added} 列`);
+  });
+  // Use onclick to avoid stacking listeners across re-renders
+  el.onclick = (e) => {
     const wlIdx = e.target?.dataset?.exclWhitelist;
     if (wlIdx != null) {
-      const row = rows[parseInt(wlIdx)];
+      const row = allRows[parseInt(wlIdx)];
       if (!row) return;
       row.whitelisted = true;
       const wl = loadWhitelist();
-      wl.push(row.rawContent.filter(Boolean).join('|'));
+      wl.push((row.rawContent||[]).filter(Boolean).join('|'));
       saveWhitelist(wl);
       renderExclusionViewer();
       toast('已加入白名單');
@@ -1240,34 +1306,26 @@ function renderExclusionViewer() {
     }
     const restIdx = e.target?.dataset?.exclRestore;
     if (restIdx != null) {
-      const row = rows[parseInt(restIdx)];
+      const row = allRows[parseInt(restIdx)];
       if (!row || row.restored) return;
       row.restored = true;
       const rc = row.rawContent || [];
       const vNo = (map.voucherNo >= 0 ? rc[map.voucherNo] : '') || rc[1] || '';
       const joined = rc.filter(Boolean).join(' | ');
-      const restoredTxn = {
-        id: 'restored-' + Math.random().toString(36).slice(2),
-        restored: true,
-        accountCode: '', accountName: '（恢復列）',
-        accountNormalSide: '',
-        voucherNo: vNo,
-        date: new Date(), dateISO: '', dateROC: rc[0] || '',
-        periodROC: '',
-        rawSummary: joined,
-        summary: joined,
-        summaryNormalized: joined,
+      AppState.transactions.push({
+        id: 'restored-' + Math.random().toString(36).slice(2), restored: true,
+        accountCode: '', accountName: '（恢復列）', accountNormalSide: '',
+        voucherNo: vNo, date: new Date(), dateISO: '', dateROC: rc[0] || '', periodROC: '',
+        rawSummary: joined, summary: joined, summaryNormalized: joined,
         debit: 0, credit: 0, balance: 0,
         defaultGroupName: '', keywordGroupName: '', manualGroupName: '',
-        effectiveGroupName: '（恢復列）',
-        hasMultiSummaryInVoucher: false,
-      };
-      AppState.transactions.push(restoredTxn);
+        effectiveGroupName: '（恢復列）', hasMultiSummaryInVoucher: false,
+      });
       renderBase();
       renderExclusionViewer();
       toast('已恢復 1 列，請重新分組');
     }
-  });
+  };
 }
 
 function renderKeywordRuleList() {

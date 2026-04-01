@@ -9,6 +9,7 @@ const AppState = {
   offset: { pairs: [], forcedUnmatchedIds: [], manualPairIds: [], manualMatches: [], lastUnmatchedIds: [], unmatchedGroups: [], copyText: '', suggestThreshold: 80, timeWindowDays: 14, subsetMaxK: 4, subsetTimeLimitMs: 1200, unmatchedView: 'review' },
   pool: { candidateIds: [], results: [], groups: [], ungrouped: [], copyText: '' }, anomaly: { results: [], reviewed: new Set() }, crossLink: { mode: 'keyword', query: '', results: [] },
   gap: { results: [], periodicSuggestions: [] }, dupVoucher: { results: [] }, trendAlert: { results: [], groups: [], ungrouped: [], copyText: '' }, todos: [],
+  dupEntry: { results: [], reviewed: new Set(), dayWindow: 0, amtTolPct: 1 },
   memo: { notes: {}, rules: [], missingResults: [] },
   compare: { baseTxns: [], baseMeta: null, targetTxns: [], targetMeta: null, results: null, threshold: 1000, splitByYear: true },
   importPreview: null,
@@ -382,6 +383,117 @@ function renderF19Results() {
   <details open style="margin:8px 0;"><summary style="cursor:pointer;font-weight:600;">金額變動（${changed.length}）</summary><div style="padding:8px 0;">${chgHtml}</div></details>`;
 }
 
+// ---- F20: 疑似重複入帳偵測 ----
+function runF20() {
+  const txns = AppState.transactions;
+  if (!txns.length) return toast('請先上傳帳務資料', 'WARN');
+  const dayWindow = Math.max(0, Number(document.getElementById('f20DayWindow')?.value ?? 0));
+  const amtTolPct = Math.max(0, Number(document.getElementById('f20AmtTol')?.value ?? 1));
+  AppState.dupEntry.dayWindow = dayWindow;
+  AppState.dupEntry.amtTolPct = amtTolPct;
+  AppState.dupEntry.reviewed = new Set();
+
+  // Group transactions by accountCode
+  const byAccount = new Map();
+  for (const t of txns) {
+    if (!(t.date instanceof Date)) continue;
+    if (!byAccount.has(t.accountCode)) byAccount.set(t.accountCode, []);
+    byAccount.get(t.accountCode).push(t);
+  }
+
+  const groups = [];
+  for (const [, acTxns] of byAccount) {
+    const sorted = [...acTxns].sort((a, b) => a.date - b.date);
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        const diff = daysBetween(a.date, b.date);
+        if (diff > dayWindow) break; // sorted, so all further are farther
+        // Must have DIFFERENT voucher numbers
+        if (a.voucherNo === b.voucherNo) continue;
+        // Must be same direction (both debit or both credit, not mix)
+        const aAmt = a.debit > 0 ? a.debit : a.credit > 0 ? a.credit : 0;
+        const bAmt = b.debit > 0 ? b.debit : b.credit > 0 ? b.credit : 0;
+        if (aAmt === 0 || bAmt === 0) continue;
+        const aDir = a.debit > 0 ? 'D' : 'C';
+        const bDir = b.debit > 0 ? 'D' : 'C';
+        if (aDir !== bDir) continue;
+        // Amount similarity check
+        const maxAmt = Math.max(aAmt, bAmt);
+        const amtDiff = Math.abs(aAmt - bAmt);
+        if (maxAmt === 0) continue;
+        if ((amtDiff / maxAmt) * 100 > amtTolPct) continue;
+        groups.push({ id: Math.random().toString(36).slice(2, 10), a, b, diff, amtDiff, aAmt, bAmt, dir: aDir, amtDiffPct: (amtDiff / maxAmt) * 100 });
+      }
+    }
+  }
+
+  AppState.dupEntry.results = groups;
+  renderF20Results();
+}
+
+function renderF20Results() {
+  const el = document.getElementById('f20Result');
+  if (!el) return;
+  const { results, reviewed, dayWindow, amtTolPct } = AppState.dupEntry;
+  if (!results.length) {
+    el.innerHTML = `<div class="info-box ok">未找到疑似重複入帳（日期窗口 ±${dayWindow} 天，金額容差 ${amtTolPct}%）。</div>`;
+    return;
+  }
+  const pending = results.filter(g => !reviewed.has(g.id));
+  const done = results.filter(g => reviewed.has(g.id));
+  const fmtDir = d => d === 'D' ? '<span class="warn">借</span>' : '<span class="ok">貸</span>';
+  const renderRow = (g, isReviewed) => {
+    const reviewedCls = isReviewed ? ' style="opacity:0.45;"' : '';
+    const btnHtml = isReviewed
+      ? `<button class="btn-sm" data-f20-unreview="${g.id}">取消確認</button>`
+      : `<button class="btn-sm" data-f20-review="${g.id}">✓ 正常，略過</button>`;
+    return `<tr${reviewedCls}>
+      <td class="col-date">${escapeHtml(g.a.dateROC)}</td>
+      <td>[${escapeHtml(g.a.accountCode)}] ${escapeHtml(g.a.accountName)}</td>
+      <td>${fmtDir(g.dir)}</td>
+      <td class="col-voucher">${escapeHtml(g.a.voucherNo)}</td>
+      <td class="col-summary">${escapeHtml(g.a.rawSummary || g.a.summary || '—')}</td>
+      <td class="col-amount">${fmtAmount(g.aAmt)}</td>
+      <td class="col-date">${escapeHtml(g.b.dateROC)}</td>
+      <td class="col-voucher">${escapeHtml(g.b.voucherNo)}</td>
+      <td class="col-summary">${escapeHtml(g.b.rawSummary || g.b.summary || '—')}</td>
+      <td class="col-amount">${fmtAmount(g.bAmt)}</td>
+      <td class="col-amount muted">${g.diff === 0 ? '同日' : `差 ${g.diff} 天`}</td>
+      <td class="col-amount muted">${g.amtDiffPct < 0.01 ? '完全相同' : `差 ${g.amtDiffPct.toFixed(2)}%`}</td>
+      <td>${btnHtml}</td>
+    </tr>`;
+  };
+
+  const tableHtml = (rows, title, cls) => rows.length ? `
+    <div class="${cls}" style="margin-bottom:8px;">${title}</div>
+    <div class="table-wrap"><table style="min-width:1100px;">
+      <thead><tr>
+        <th>日期(A)</th><th>科目</th><th>方向</th>
+        <th>傳票(A)</th><th>摘要(A)</th><th class="col-amount">金額(A)</th>
+        <th>日期(B)</th><th>傳票(B)</th><th>摘要(B)</th><th class="col-amount">金額(B)</th>
+        <th>日期差</th><th>金額差</th><th>操作</th>
+      </tr></thead>
+      <tbody>${rows.map(g => renderRow(g, done.includes(g))).join('')}</tbody>
+    </table></div>` : '';
+
+  el.innerHTML = `
+    <div class="info-box warn" style="margin-bottom:8px;">
+      共發現 <strong>${results.length}</strong> 組疑似重複入帳，已確認正常 ${done.length} 組，剩餘待查 <strong>${pending.length}</strong> 組。
+    </div>
+    ${tableHtml(pending, `待查（${pending.length} 組）`, 'info-box danger')}
+    ${done.length ? tableHtml(done, `已確認正常（${done.length} 組）`, 'info-box ok') : ''}`;
+
+  // Bind review buttons
+  el.onclick = (e) => {
+    const reviewId = e.target?.dataset?.f20Review;
+    const unreviewId = e.target?.dataset?.f20Unreview;
+    if (reviewId) { AppState.dupEntry.reviewed.add(reviewId); renderF20Results(); }
+    else if (unreviewId) { AppState.dupEntry.reviewed.delete(unreviewId); renderF20Results(); }
+  };
+}
+
 // ---- Cross-module Navigation ----
 function navigateToModule(moduleId, filters = {}) {
   dom.navButtons.forEach(b => b.classList.toggle('active', b.dataset.module === moduleId));
@@ -464,6 +576,7 @@ const dom = {
   f1NormSettingsBtn: document.getElementById('f1NormSettingsBtn'),
   f1NormPanel: document.getElementById('f1NormPanel'),
   f19Result: document.getElementById('f19Result'),
+  f20Result: document.getElementById('f20Result'),
 };
 
 function escapeHtml(v) { return String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
@@ -5286,6 +5399,23 @@ function bindEvents() {
     AppState.compare.threshold = Number(document.getElementById('f19Threshold')?.value || 1000);
     AppState.compare.splitByYear = document.getElementById('f19SplitByYear')?.checked ?? true;
     runF19Compare();
+  });
+
+  // ---- F20 疑似重複入帳 ----
+  document.getElementById('runF20Btn')?.addEventListener('click', runF20);
+  document.getElementById('exportF20Btn')?.addEventListener('click', () => {
+    const { results } = AppState.dupEntry;
+    if (!results.length) return toast('請先執行掃描', 'WARN');
+    const rows = results.map(g => [
+      g.a.dateROC, g.a.accountCode, g.a.accountName,
+      g.a.voucherNo, g.a.rawSummary || '', fmtAmount(g.aAmt),
+      g.b.dateROC, g.b.voucherNo, g.b.rawSummary || '', fmtAmount(g.bAmt),
+      g.diff, g.amtDiffPct.toFixed(2) + '%',
+      AppState.dupEntry.reviewed.has(g.id) ? '已確認正常' : '待查',
+    ]);
+    downloadCsv(`疑似重複入帳_${Date.now()}.csv`,
+      ['日期A', '科目代碼', '科目名稱', '傳票A', '摘要A', '金額A', '日期B', '傳票B', '摘要B', '金額B', '日期差', '金額差%', '狀態'],
+      rows);
   });
 }
 

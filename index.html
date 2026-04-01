@@ -339,6 +339,173 @@
 
     /* Export button group */
     .btn-export-group { display: flex; gap: 6px; margin-left: auto; }
+
+    /* ---- Enhanced Module Header ---- */
+    .module > h3:first-child {
+      margin: 0 0 2px;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.2px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--line2);
+      margin-bottom: 12px;
+    }
+
+    /* ---- Toolbar refinement ---- */
+    .toolbar {
+      align-items: center;
+    }
+    .toolbar .btn-group {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 2px;
+      background: var(--line2);
+    }
+    .toolbar .btn-group button {
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      margin: 0;
+    }
+    .toolbar .btn-group button.active {
+      background: #fff;
+      color: var(--brand);
+      box-shadow: 0 1px 4px rgba(14,32,72,0.1);
+    }
+
+    /* ---- Card interior sectioning ---- */
+    .card-section {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line2);
+    }
+    .card-section-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #7a99b8;
+      margin-bottom: 8px;
+    }
+
+    /* ---- Better form labels ---- */
+    label small.muted {
+      font-size: 11px;
+      display: block;
+      margin-top: 1px;
+      line-height: 1.3;
+    }
+
+    /* ---- Primary button improvement ---- */
+    button.primary {
+      box-shadow: 0 2px 6px rgba(22,93,255,0.20);
+    }
+    button.primary:hover {
+      box-shadow: 0 4px 12px rgba(22,93,255,0.30);
+      transform: translateY(-1px);
+    }
+    button.primary:active { transform: translateY(0); box-shadow: none; }
+
+    /* ---- Table row highlight for flagged entries ---- */
+    .row-warn { background: #fffbe6 !important; }
+    .row-danger { background: #fff1f0 !important; }
+    .row-ok { background: #f6ffed !important; }
+    .row-reviewed { opacity: 0.5; }
+
+    /* ---- Summary stat bar ---- */
+    .stat-bar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 10px 0;
+    }
+    .stat-bar .stat-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f8fafd;
+      border: 1px solid var(--line2);
+      border-radius: 10px;
+      padding: 8px 16px;
+      min-width: 90px;
+    }
+    .stat-bar .stat-num {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--ink);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-bar .stat-label {
+      font-size: 11px;
+      color: var(--ink2);
+      margin-top: 3px;
+    }
+    .stat-bar .stat-num.warn { color: var(--warn); }
+    .stat-bar .stat-num.danger { color: var(--danger); }
+    .stat-bar .stat-num.ok { color: var(--ok); }
+    .stat-bar .stat-num.brand { color: var(--brand); }
+
+    /* ---- Better table header styling ---- */
+    th {
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      text-transform: none;
+    }
+
+    /* ---- Sticky filter bar at top of filter area ---- */
+    .filter-bar {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 0;
+      box-shadow: var(--shadow);
+    }
+
+    /* ---- Nav badge count ---- */
+    .nav-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      height: 16px;
+      border-radius: 8px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 0 4px;
+      background: var(--danger);
+      color: #fff;
+      margin-left: auto;
+    }
+    .nav-badge.warn { background: var(--warn); }
+    .nav-badge.ok { background: var(--ok); }
+
+    /* ---- Improved info-box ---- */
+    .info-box {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .info-box::before {
+      content: '';
+      flex-shrink: 0;
+      width: 4px;
+      align-self: stretch;
+      display: none; /* left-border already acts as marker */
+    }
+
+    /* ---- Improved pagination ---- */
+    .pagination button { min-width: 32px; }
+    .pagination button.active-page {
+      background: var(--brand);
+      color: #fff;
+      border-color: var(--brand);
+    }
   </style>
 </head>
 <body>
@@ -348,13 +515,13 @@
         <h1>離線分類帳分析工具</h1>
         <div class="meta" id="metaText">尚未上傳檔案</div>
       </div>
-      <div class="toolbar">
-        <label class="primary" style="cursor:pointer;padding:8px 10px;border-radius:8px;background:#165dff;color:#fff;">
-          上傳 Excel
+      <div class="toolbar" style="gap:8px;">
+        <label style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;background:var(--brand);color:#fff;font-weight:600;font-size:13px;box-shadow:0 2px 6px rgba(22,93,255,.2);">
+          📂 上傳 Excel
           <input id="fileInput" type="file" accept=".xlsx,.xls" style="display:none;" />
         </label>
-        <button id="resetBtn">重新上傳</button>
-        <button id="clearLocalBtn" class="danger">清除本地資料</button>
+        <button id="resetBtn" title="清除目前資料，重新上傳">↩ 重新上傳</button>
+        <button id="clearLocalBtn" class="danger" title="清除所有 localStorage 資料">🗑 清除本地資料</button>
       </div>
     </header>
 
@@ -374,6 +541,7 @@
         <button data-module="f14" title="偵測相同傳票號碼的重複分錄">📌 重複傳票</button>
         <button data-module="f18" title="追蹤同摘要金額跨月異動">📈 金額變動</button>
         <button data-module="f19" title="比較兩份分類帳，找出新增、消失摘要與金額差異">🔀 多檔比較</button>
+        <button data-module="f20" title="同日期不同傳票但金額相近的疑似重複入帳">🔁 疑似重複入帳</button>
         <div class="nav-section">進階分析</div>
         <button data-module="f10" title="驗算每張傳票借貸是否平衡">🧾 傳票借貸驗算</button>
         <button data-module="f11" title="科目 × 月份的金額彙總矩陣">📊 月份矩陣</button>
@@ -384,7 +552,8 @@
       </aside>
 
       <main class="content">
-        <section class="card">
+        <section class="card filter-bar">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#7a99b8;margin-bottom:8px;">全域篩選 — 套用至所有模組</div>
           <div class="grid">
             <label>科目
               <select id="accountSelect"></select>
@@ -399,7 +568,7 @@
               <input id="periodTo" type="text" placeholder="114-12" style="width:100%;" />
             </label>
           </div>
-          <div id="stats" class="muted" style="margin-top:8px;"></div>
+          <div id="stats" class="muted" style="margin-top:8px;font-size:12px;"></div>
         </section>
 
         <section class="card module active" id="module-overview">
@@ -838,6 +1007,27 @@
             <button id="f15ViewToggle" class="f15-toggle-btn" title="切換顯示原始摘要或正規化摘要">原始 / 正規化</button>
           </div>
           <div id="f15Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「執行分析」。</div></div>
+        </section>
+
+        <section class="card module" id="module-f20">
+          <h3>疑似重複入帳偵測</h3>
+          <p class="muted" style="margin-top:0;">在同一科目內，找出日期相近、傳票號碼不同、但金額相似的分錄組合。常見情境：同一筆費用被不同傳票重複登入，或同期間有相同金額的誤重複輸入。</p>
+          <div class="info-box info" style="margin-bottom:10px;font-size:12px;">
+            <strong>判斷條件：</strong>① 同一科目 ② 同方向（同為借方或貸方）③ 不同傳票號碼 ④ 日期差距 ≤ 日期窗口 ⑤ 金額差距 ≤ 設定容差%
+          </div>
+          <div class="grid">
+            <label>日期窗口（天）<small class="muted">0 = 限同一天</small>
+              <input id="f20DayWindow" type="number" min="0" max="30" value="0" />
+            </label>
+            <label>金額容差（%）<small class="muted">0 = 金額完全相同</small>
+              <input id="f20AmtTol" type="number" min="0" max="100" step="0.5" value="1" />
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="runF20Btn" class="primary">掃描疑似重複入帳</button>
+            <button id="exportF20Btn">匯出 CSV</button>
+          </div>
+          <div id="f20Result" style="margin-top:10px;"><div class="info-box info">請先上傳 Excel 分類帳，再按「掃描」。</div></div>
         </section>
       </main>
     </div>

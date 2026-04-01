@@ -4,3 +4,7 @@
 *.ps1
 .DS_Store
 Thumbs.db
+.codex-autopilot-goal.md
+.codex-autopilot/
+.playwright-cli/
+output/playwright/

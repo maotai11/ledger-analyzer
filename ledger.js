@@ -2161,8 +2161,12 @@ function f1NormalizeForMatch(s) {
   return cleanText(s || '');
 }
 
-function f1RuleMatch(txn, rule) {
-  const keyword = cleanText(rule?.keyword || '');
+function f1RuleKeyword(rule, fallback = '') {
+  return cleanText(rule?.keyword || fallback || '');
+}
+
+function f1RuleMatch(txn, rule, fallbackKeyword = '') {
+  const keyword = f1RuleKeyword(rule, fallbackKeyword);
   if (!keyword) return false;
   const text = f1NormalizeForMatch(txn?.rawSummary || txn?.summary || '');
   if (!text) return false;
@@ -2176,6 +2180,25 @@ function f1RuleMatch(txn, rule) {
   }
   // A: 直接包含
   return text.includes(keyword);
+}
+
+function syncF1TxnGroupLabels(txnIds) {
+  const touched = Array.from(new Set((txnIds || []).filter(Boolean)));
+  if (!touched.length) return;
+  const touchedSet = new Set(touched);
+  const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+  const groupNameByTxnId = new Map();
+  AppState.grouping.groups.forEach((group) => {
+    (group.transactionIds || []).forEach((id) => {
+      if (touchedSet.has(id)) groupNameByTxnId.set(id, group.name);
+    });
+  });
+  touched.forEach((id) => {
+    const txn = txMap.get(id);
+    if (!txn) return;
+    txn.defaultGroupName = groupNameByTxnId.get(id) || '';
+    txn.effectiveGroupName = txn.manualGroupName || txn.keywordGroupName || txn.defaultGroupName || txn.summaryNormalized || txn.rawSummary;
+  });
 }
 
 function syncF1DraftEditsFromUI() {
@@ -2416,6 +2439,7 @@ function buildF1GroupCard(g, txMap, accountLastBalance, groupOptions, page) {
       </label>
       <button data-f1-rule-select="${g.id}">只勾選命中</button>
       <button data-f1-rule-clear="${g.id}">清除勾選</button>
+      <button data-f1-rule-pull="${g.id}" class="primary" title="從其他群組（含「其他」）中，把符合關鍵字的分錄移入本群組">⬇ 引入命中</button>
     </div>
 
     <div style="margin-top:8px;">${checks || '<div class="muted">此群組無資料</div>'}</div>
@@ -4579,6 +4603,7 @@ function bindEvents() {
     const g = AppState.grouping.groups.find((x) => x.id === gid);
     if (!g) return;
     g.name = cleanText(e.target.value) || g.name;
+    syncF1TxnGroupLabels(g.transactionIds);
     renderF1Output();
   });
 
@@ -4635,7 +4660,7 @@ function bindEvents() {
       const hits = new Set();
       group.transactionIds.forEach((id) => {
         const t = txMap.get(id);
-        if (t && f1RuleMatch(t, group.rule)) hits.add(id);
+        if (t && f1RuleMatch(t, group.rule, group.name)) hits.add(id);
       });
       dom.f1Result.querySelectorAll(`input[data-f1-pick][data-f1-from="${ruleSelectId}"]`).forEach((cb) => {
         cb.checked = hits.has(cb.getAttribute('data-f1-pick'));
@@ -4649,16 +4674,60 @@ function bindEvents() {
       toast('已清除勾選');
       return;
     }
+    const rulePullId = e.target?.dataset?.f1RulePull;
+    if (rulePullId) {
+      const targetGroup = AppState.grouping.groups.find((g) => g.id === rulePullId);
+      if (!targetGroup) return;
+      if (!targetGroup.rule) targetGroup.rule = { mode: 'A', keyword: '', threshold: 70 };
+      const needle = f1RuleKeyword(targetGroup.rule, targetGroup.name);
+      if (!needle) {
+        toast('請先輸入本組關鍵字，或提供群組名稱', 'WARN');
+        return;
+      }
+      const txMap = new Map(AppState.transactions.map((t) => [t.id, t]));
+      const pulledIds = [];
+      AppState.grouping.groups.forEach((group) => {
+        if (group.id === rulePullId) return;
+        const remainIds = [];
+        (group.transactionIds || []).forEach((id) => {
+          const txn = txMap.get(id);
+          if (txn && f1RuleMatch(txn, targetGroup.rule, targetGroup.name)) {
+            pulledIds.push(id);
+            return;
+          }
+          remainIds.push(id);
+        });
+        group.transactionIds = remainIds;
+      });
+      if (!pulledIds.length) {
+        toast(`沒有可引入的命中分錄（規則：${needle}）`, 'WARN');
+        return;
+      }
+      const existing = new Set(targetGroup.transactionIds || []);
+      pulledIds.forEach((id) => {
+        if (!existing.has(id)) {
+          existing.add(id);
+          targetGroup.transactionIds.push(id);
+        }
+      });
+      AppState.grouping.ungrouped = AppState.grouping.ungrouped.filter((id) => !existing.has(id));
+      syncF1TxnGroupLabels(pulledIds);
+      renderF1Output();
+      toast(`已引入命中 ${pulledIds.length} 筆`);
+      return;
+    }
 
     const delGroupId = e.target?.dataset?.f1DelGroup;
     if (delGroupId) {
       const group = AppState.grouping.groups.find((g) => g.id === delGroupId);
       if (!group) return;
+      const movedIds = [...group.transactionIds];
       const other = ensureOtherGroup();
       if (other.id !== group.id) {
         group.transactionIds.forEach((id) => { if (!other.transactionIds.includes(id)) other.transactionIds.push(id); });
       }
       AppState.grouping.groups = AppState.grouping.groups.filter((g) => g.id !== delGroupId);
+      syncF1TxnGroupLabels(movedIds);
       renderF1Output();
       return;
     }
@@ -4683,6 +4752,7 @@ function bindEvents() {
       }
       fromGroup.transactionIds = fromGroup.transactionIds.filter((id) => !picks.includes(id));
       picks.forEach((id) => { if (!toGroup.transactionIds.includes(id)) toGroup.transactionIds.push(id); });
+      syncF1TxnGroupLabels(picks);
       renderF1Output();
       toast(`已批次移動 ${picks.length} 筆`);
       return;
@@ -4699,6 +4769,7 @@ function bindEvents() {
       }
       fromGroup.transactionIds = fromGroup.transactionIds.filter((id) => !picks.includes(id));
       picks.forEach((id) => { if (!AppState.grouping.ungrouped.includes(id)) AppState.grouping.ungrouped.push(id); });
+      syncF1TxnGroupLabels(picks);
       renderF1Output();
       toast(`已批次刪除 ${picks.length} 筆`);
       return;
@@ -4713,6 +4784,7 @@ function bindEvents() {
       if (!fromGroup || !toGroup) return;
       fromGroup.transactionIds = fromGroup.transactionIds.filter((id) => id !== moveTxnId);
       if (!toGroup.transactionIds.includes(moveTxnId)) toGroup.transactionIds.push(moveTxnId);
+      syncF1TxnGroupLabels([moveTxnId]);
       renderF1Output();
       return;
     }
@@ -4722,6 +4794,7 @@ function bindEvents() {
       if (!fromGroup) return;
       fromGroup.transactionIds = fromGroup.transactionIds.filter((id) => id !== delTxnId);
       if (!AppState.grouping.ungrouped.includes(delTxnId)) AppState.grouping.ungrouped.push(delTxnId);
+      syncF1TxnGroupLabels([delTxnId]);
       renderF1Output();
     }
   });

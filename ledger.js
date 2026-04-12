@@ -3960,9 +3960,30 @@ function bindEvents() {
   dom.keywordInput.addEventListener('input', renderBase);
 
   dom.navButtons.forEach((btn) => btn.addEventListener('click', () => {
-    dom.navButtons.forEach((b) => b.classList.toggle('active', b === btn));
+    dom.navButtons.forEach((b) => {
+      b.classList.toggle('active', b === btn);
+      // ARIA: Update aria-selected for all tabs
+      b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+    });
     const target = btn.dataset.module;
-    dom.modules.forEach((m) => m.classList.toggle('active', m.id === `module-${target}`));
+    dom.modules.forEach((m) => {
+      const isActive = m.id === `module-${target}`;
+      m.classList.toggle('active', isActive);
+      // ARIA: Show/hide tabpanels
+      if (isActive) {
+        m.removeAttribute('hidden');
+        // Move focus to module heading for screen readers
+        setTimeout(() => {
+          const heading = m.querySelector('h3');
+          if (heading) {
+            heading.setAttribute('tabindex', '-1');
+            heading.focus();
+          }
+        }, 100);
+      } else {
+        m.setAttribute('hidden', '');
+      }
+    });
   }));
 
   dom.runF1Btn.addEventListener('click', runF1Grouping);
@@ -5500,7 +5521,125 @@ function init() {
   bindEvents();
   renderTodos();
   renderF9Rules();
+  setupAccessibility();
   toast(`LibDetector: Fuse ${hasFuse ? 'OK' : 'fallback'} / Decimal ${hasDecimal ? 'OK' : 'missing'}`);
+}
+
+// ============================================
+// Accessibility Enhancements
+// ============================================
+
+function setupAccessibility() {
+  // 1. Add ARIA landmarks
+  const content = document.querySelector('.content');
+  if (content && !content.getAttribute('role')) {
+    content.setAttribute('role', 'main');
+    content.setAttribute('id', 'main-content');
+    content.setAttribute('aria-label', '主要內容區域');
+  }
+
+  const nav = document.querySelector('.nav');
+  if (nav && !nav.getAttribute('aria-label')) {
+    nav.setAttribute('role', 'navigation');
+    nav.setAttribute('aria-label', '主功能選單');
+  }
+
+  const header = document.querySelector('.header');
+  if (header && !header.getAttribute('role')) {
+    header.setAttribute('role', 'banner');
+  }
+
+  // 2. Add ARIA attributes to nav buttons (tabs)
+  document.querySelectorAll('.nav button[data-module]').forEach((btn) => {
+    const moduleId = btn.dataset.module;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', btn.classList.contains('active') ? 'true' : 'false');
+    btn.setAttribute('aria-controls', `module-${moduleId}`);
+    btn.setAttribute('id', `tab-${moduleId}`);
+    btn.setAttribute('tabindex', btn.classList.contains('active') ? '0' : '-1');
+
+    // Add ARIA to corresponding module panels
+    const moduleEl = document.getElementById(`module-${moduleId}`);
+    if (moduleEl && !moduleEl.getAttribute('role')) {
+      moduleEl.setAttribute('role', 'tabpanel');
+      moduleEl.setAttribute('aria-labelledby', `tab-${moduleId}`);
+      moduleEl.setAttribute('tabindex', '0');
+      if (!btn.classList.contains('active')) {
+        moduleEl.setAttribute('hidden', '');
+      }
+    }
+  });
+
+  // 3. Add scope to table headers
+  document.querySelectorAll('table th').forEach((th) => {
+    if (!th.getAttribute('scope')) {
+      th.setAttribute('scope', 'col');
+    }
+  });
+
+  // 4. Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const isInputFocused = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    
+    // Alt + Number: Switch modules
+    if (e.altKey && !e.shiftKey && !isInputFocused) {
+      const moduleMap = {
+        '1': 'overview',
+        '2': 'f7',
+        '3': 'f1',
+        '4': 'f2',
+        '5': 'f3',
+        '6': 'f5',
+        '7': 'f4',
+        '8': 'f6',
+        '9': 'f14',
+        '0': 'f18'
+      };
+      
+      if (moduleMap[e.key]) {
+        e.preventDefault();
+        const btn = document.querySelector(`[data-module="${moduleMap[e.key]}"]`);
+        if (btn) {
+          btn.click();
+          toast(`已切換到: ${btn.textContent.trim()}`, 'INFO');
+        }
+      }
+    }
+
+    // / : Focus keyword search
+    if (e.key === '/' && !isInputFocused) {
+      e.preventDefault();
+      const keywordInput = document.getElementById('keywordInput');
+      if (keywordInput) {
+        keywordInput.focus();
+      }
+    }
+
+    // Escape: Close modals (if any)
+    if (e.key === 'Escape' && !isInputFocused) {
+      const overlay = document.querySelector('.modal-overlay');
+      if (overlay) {
+        overlay.click();
+      }
+    }
+  });
+
+  // 5. Enhance toast for accessibility
+  const originalToast = window.toast;
+  if (originalToast && typeof originalToast === 'function') {
+    window.toast = function(msg, type = 'INFO') {
+      const icons = {
+        'SUCCESS': '✅',
+        'ERROR': '❌',
+        'WARN': '⚠️',
+        'INFO': 'ℹ️'
+      };
+      const icon = icons[type.toUpperCase()] || icons.INFO;
+      originalToast(`${icon} ${msg}`, type);
+    };
+  }
+
+  console.log('[A11Y] Accessibility enhancements applied');
 }
 
 init();

@@ -1,5 +1,6 @@
 *.bak
 *.bak-*
+*.backup
 *.diff
 *.ps1
 .DS_Store
@@ -8,3 +9,56 @@ Thumbs.db
 .codex-autopilot/
 .playwright-cli/
 output/playwright/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+*.token
+
+# Build & Distribution
+dist/
+build/
+out/
+release/
+*.exe
+*.dmg
+*.msi
+*.AppImage
+
+# Logs & Cache
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+cache/
+.cache/
+node_modules/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Testing & Temp
+test-data/
+temp/
+tmp/
+*.tmp
+
+# Large binaries
+*.zip
+*.tar.gz
+*.rar
